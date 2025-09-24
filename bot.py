@@ -26,12 +26,13 @@ class GangleBot:
     def __init__(self):
         """Initialize the bot."""
         self.app = Application.builder().token(config.telegram_bot_token).build()
-        self.waiting_for_guesses: Dict[int, Dict[str, Any]] = {}  # chat_id -> {user_id: callback_data}
+        self.user_guess_states: Dict[str, Dict[str, Any]] = {}  # "chat_id:user_id" -> guess state
         self._setup_handlers()
     
     def _setup_handlers(self):
         """Set up all command and message handlers."""
         # Command handlers
+        self.app.add_handler(CommandHandler("start", self.start_bot))
         self.app.add_handler(CommandHandler("start_round", self.start_round))
         self.app.add_handler(CommandHandler("leaderboard", self.show_leaderboard))
         self.app.add_handler(CommandHandler("forfeit", self.forfeit_player))
@@ -49,6 +50,29 @@ class GangleBot:
         
         # Error handler
         self.app.add_error_handler(self.error_handler)
+    
+    async def start_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command."""
+        if not update.message or not update.message.from_user:
+            return
+        
+        user_name = update.message.from_user.first_name or "there"
+        
+        if update.message.chat.type == 'private':
+            # Private chat - welcome message
+            await update.message.reply_text(
+                f"👋 Hi {user_name}! Welcome to **Gangle - Guess the Angle Game**!\n\n"
+                "🎯 I'm a group game bot. Add me to a group chat and use `/start_round` to begin playing!\n\n"
+                "✨ **New!** No private messaging needed - all interactions happen in the group using inline buttons!\n\n"
+                "📝 Use `/help` to see all available commands.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            # Group chat - redirect to start_round
+            await update.message.reply_text(
+                "🎯 Use `/start_round` to begin a new angle guessing game!\n\n"
+                "💡 **New!** Everything happens right here in the group - no private messaging required!"
+            )
     
     async def start_round(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start_round command."""
@@ -125,9 +149,15 @@ class GangleBot:
         
         if query.data.startswith("guess_"):
             await self._handle_guess_button(update, context)
+        elif query.data.startswith("pick_"):
+            await self._handle_number_picker(update, context)
+        elif query.data.startswith("confirm_"):
+            await self._handle_guess_confirmation(update, context)
+        elif query.data.startswith("cancel_"):
+            await self._handle_guess_cancellation(update, context)
     
     async def _handle_guess_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle guess button press."""
+        """Handle initial guess button press."""
         query = update.callback_query
         if not query or not query.message or not query.from_user:
             return
@@ -140,8 +170,9 @@ class GangleBot:
         # Check if round is active
         round_obj = game_manager.get_active_round(chat_id)
         if not round_obj:
-            await query.edit_message_text(
-                "❌ No active round found. Use /start_round to begin a new round."
+            await query.answer(
+                "❌ No active round found. Use /start_round to begin a new round.",
+                show_alert=True
             )
             return
         
@@ -150,86 +181,163 @@ class GangleBot:
         
         # Check if player already submitted
         if user_id in round_obj.players and round_obj.players[user_id].guess is not None:
-            await query.edit_message_text(
-                f"✅ You've already submitted your guess for this round!\n\n"
-                f"Your guess: **{round_obj.players[user_id].guess}°**",
-                parse_mode=ParseMode.MARKDOWN
+            await query.answer(
+                f"✅ You've already submitted your guess: {round_obj.players[user_id].guess}°",
+                show_alert=True
             )
             return
         
-        # Store callback context for guess handling
-        self.waiting_for_guesses.setdefault(chat_id, {})[user_id] = {
-            'query_id': query.id,
+        # Initialize guess state for this user
+        state_key = f"{chat_id}:{user_id}"
+        self.user_guess_states[state_key] = {
+            'chat_id': chat_id,
+            'user_id': user_id,
             'username': username,
-            'first_name': first_name
+            'first_name': first_name,
+            'guess': [None, None, None],  # [hundreds, tens, units]
+            'step': 0  # 0=hundreds, 1=tens, 2=units
         }
         
-        # Send private instruction
-        await query.edit_message_text(
-            "🎯 **Submit your angle guess!**\n\n"
-            "📝 Reply to this message with your guess (0-359 degrees).\n"
-            "💡 Example: Just type `45` for 45 degrees\n\n"
-            "⏱️ This message will timeout in 5 minutes.",
-            parse_mode=ParseMode.MARKDOWN
+        # Show number picker for hundreds digit
+        keyboard = self._create_number_picker_keyboard(state_key, step=0)
+        
+        await query.answer(
+            "🎯 Select the hundreds digit of your angle guess (0-3):",
+            show_alert=True
         )
     
-    async def handle_guess_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle guess submissions via text messages."""
-        if not update.message or not update.message.from_user:
+    def _create_number_picker_keyboard(self, state_key: str, step: int) -> InlineKeyboardMarkup:
+        """Create number picker keyboard for current step."""
+        state = self.user_guess_states[state_key]
+        
+        if step == 0:  # Hundreds digit (0-3)
+            max_digit = 3
+        elif step == 1:  # Tens digit (0-5 if hundreds is 3, else 0-9)
+            max_digit = 5 if state['guess'][0] == 3 else 9
+        else:  # Units digit (0-5 if angle would be > 359, else 0-9)
+            current_value = (state['guess'][0] or 0) * 100 + (state['guess'][1] or 0) * 10
+            max_digit = 5 if current_value >= 350 else 9
+        
+        # Create number buttons
+        keyboard = []
+        row = []
+        for digit in range(min(max_digit + 1, 10)):
+            callback_data = f"pick_{state_key}_{step}_{digit}"
+            row.append(InlineKeyboardButton(str(digit), callback_data=callback_data))
+            if len(row) == 5:  # 5 buttons per row
+                keyboard.append(row)
+                row = []
+        if row:  # Add remaining buttons
+            keyboard.append(row)
+        
+        # Add cancel button
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{state_key}")])
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    async def _handle_number_picker(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle number picker button selection."""
+        query = update.callback_query
+        if not query or not query.data:
             return
         
-        user_id = update.message.from_user.id
-        
-        # Find which chat this guess is for
-        target_chat_id = None
-        for chat_id, waiting_users in self.waiting_for_guesses.items():
-            if user_id in waiting_users:
-                target_chat_id = chat_id
-                break
-        
-        if target_chat_id is None:
-            return  # User is not waiting to submit a guess
-        
-        # Parse guess
-        try:
-            guess = int(update.message.text.strip())
-            if not 0 <= guess <= 359:
-                await update.message.reply_text(
-                    "❌ Please enter a number between 0 and 359 degrees."
-                )
-                return
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Please enter a valid number between 0 and 359 degrees."
-            )
+        # Parse callback data: pick_{state_key}_{step}_{digit}
+        parts = query.data.split('_', 3)
+        if len(parts) < 4:
             return
         
-        # Submit guess
-        success = game_manager.submit_guess(target_chat_id, user_id, guess)
+        state_key = parts[1] + '_' + parts[2]  # Reconstruct chat_id:user_id
+        step = int(parts[3])
+        digit = int(parts[4]) if len(parts) > 4 else 0
+        
+        if state_key not in self.user_guess_states:
+            await query.answer("⚠️ Session expired. Please click Guess again.", show_alert=True)
+            return
+        
+        state = self.user_guess_states[state_key]
+        state['guess'][step] = digit
+        state['step'] = step + 1
+        
+        # Determine next step
+        if step == 0:  # Just selected hundreds
+            max_digit = 5 if digit == 3 else 9
+            message = f"🎯 Hundreds: {digit}  |  Select tens digit (0-{max_digit}):"
+        elif step == 1:  # Just selected tens
+            current_value = state['guess'][0] * 100 + digit * 10
+            max_digit = 5 if current_value >= 350 else 9
+            message = f"🎯 {state['guess'][0]}{digit}_  |  Select units digit (0-{max_digit}):"
+        else:  # Just selected units - show confirmation
+            final_guess = state['guess'][0] * 100 + state['guess'][1] * 10 + digit
+            message = f"🎯 Confirm your guess: {final_guess}°"
+            await query.answer(message, show_alert=True)
+            return
+        
+        # Continue to next digit selection
+        await query.answer(message, show_alert=True)
+    
+    async def _handle_guess_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle guess confirmation."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        
+        # Parse callback data: confirm_{state_key}_{guess}
+        parts = query.data.split('_', 3)
+        if len(parts) < 4:
+            return
+        
+        state_key = parts[1] + '_' + parts[2]
+        guess = int(parts[3])
+        
+        if state_key not in self.user_guess_states:
+            await query.answer("⚠️ Session expired.", show_alert=True)
+            return
+        
+        state = self.user_guess_states[state_key]
+        chat_id = state['chat_id']
+        user_id = state['user_id']
+        
+        # Submit the guess
+        success = game_manager.submit_guess(chat_id, user_id, guess)
         if not success:
-            await update.message.reply_text(
-                "❌ Failed to submit guess. The round may have ended."
-            )
+            await query.answer("❌ Failed to submit guess. Round may have ended.", show_alert=True)
             return
+        
+        # Clean up state
+        del self.user_guess_states[state_key]
         
         # Confirm submission
-        await update.message.reply_text(
-            f"✅ **Guess submitted successfully!**\n\n"
-            f"🎯 Your guess: **{guess}°**\n\n"
-            f"⏳ Waiting for other players to submit their guesses...",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        # Remove from waiting list
-        del self.waiting_for_guesses[target_chat_id][user_id]
-        if not self.waiting_for_guesses[target_chat_id]:
-            del self.waiting_for_guesses[target_chat_id]
+        await query.answer(f"✅ Guess {guess}° submitted successfully!", show_alert=True)
         
         # Update group status
-        await self._update_round_status(target_chat_id, context)
+        await self._update_round_status(chat_id, context)
         
         # Check if round should end
-        await self._check_round_completion(target_chat_id, context)
+        await self._check_round_completion(chat_id, context)
+    
+    async def _handle_guess_cancellation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle guess cancellation."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        
+        # Parse callback data: cancel_{state_key}
+        parts = query.data.split('_', 2)
+        if len(parts) < 3:
+            return
+        
+        state_key = parts[1] + '_' + parts[2]
+        
+        if state_key in self.user_guess_states:
+            del self.user_guess_states[state_key]
+        
+        await query.answer("❌ Guess cancelled. Click Guess again to restart.", show_alert=True)
+    
+    async def handle_guess_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages (no longer needed for guess submission)."""
+        # This method is kept for backward compatibility but doesn't process guesses anymore
+        # All guess submission now happens via inline buttons
+        pass
     
     async def _update_round_status(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Update the round status message in the group."""
@@ -434,10 +542,11 @@ class GangleBot:
         help_text = (
             "🎯 **Gangle - Guess the Angle Game**\n\n"
             "**How to Play:**\n"
-            "1. Use `/start_round` to begin a new round\n"
+            "1. Use `/start_round` in a group to begin a new round\n"
             "2. Click the 'Guess' button on the angle image\n"
-            "3. Submit your guess (0-359 degrees) privately\n"
-            "4. Wait for results and see the leaderboard!\n\n"
+            "3. Use the inline number picker to select your angle (0-359°)\n"
+            "4. Confirm your guess - it stays private until round ends!\n"
+            "5. Wait for results and see the leaderboard!\n\n"
             "**Commands:**\n"
             "• `/start_round` - Start a new game round\n"
             "• `/leaderboard` - View current rankings\n"
@@ -449,6 +558,7 @@ class GangleBot:
             "• Perfect guess (0° off): 100 points\n"
             "• Points decrease with accuracy\n"
             "• 180° off or more: 0 points\n\n"
+            "✨ **New!** No private messaging required - everything happens in the group!\n\n"
             "🎮 **Have fun guessing angles!**"
         )
         

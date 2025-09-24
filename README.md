@@ -5,19 +5,21 @@ Gangle is a fun Telegram bot game where players compete to guess angles in group
 ## Features
 
 - **Group-based gameplay**: Designed specifically for Telegram group chats
-- **Interactive guessing**: Players use inline buttons to submit private guesses
+- **Interactive number picker**: Use inline buttons to select your guess digit by digit
+- **Private guess submission**: Your guess stays hidden from other players until round ends
 - **Point system**: Rewards accuracy with a scaled scoring system (max 100 points)
 - **Leaderboard**: Tracks player performance across rounds  
 - **Admin controls**: Forfeit players or reset leaderboards
-- **Clean interface**: Uses callback queries to avoid chat clutter
+- **No private messaging required**: Everything happens in the group chat!
 
 ## How to Play
 
 1. Type `/start_round` to begin a new round
 2. The bot posts an angle image with a "Guess" button
-3. Click the button to submit your guess privately (0-359 degrees)
-4. Wait for all players to submit or admin to forfeit inactive players
-5. View results with the correct angle, all guesses, and updated scores!
+3. Click the button and use the inline number picker to select your angle (0-359 degrees)
+4. Confirm your guess - it stays private until the round ends!
+5. Wait for all players to submit or admin to forfeit inactive players
+6. View results with the correct angle, all guesses, and updated scores!
 
 ## Commands
 
