@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  gangle-bot:
+    build: .
+    container_name: gangle-telegram-bot
+    restart: unless-stopped
+    
+    # Environment variables (override with .env file)
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MIN_PLAYERS=${MIN_PLAYERS:-2}
+      - MAX_WAIT_TIME=${MAX_WAIT_TIME:-300}
+      - MIN_WAIT_TIME=${MIN_WAIT_TIME:-30}
+    
+    # Mount data directory as volume for persistence
+    volumes:
+      - ./data:/app/data
+      - ./gangle.log:/app/gangle.log
+    
+    # Optional: Add labels for better organization
+    labels:
+      - "com.docker.compose.service=gangle-bot"
+      - "description=Gangle Telegram Bot - Angle Guessing Game"
+    
+    # Optional: Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -203,7 +203,7 @@ class GangleBot:
         # Check if player already submitted
         if user_id in round_obj.players and round_obj.players[user_id].guess is not None:
             await query.answer(
-                f"✅ You've already submitted your guess: {round_obj.players[user_id].guess}°",
+                "✅ You've already submitted your guess!",
                 show_alert=True
             )
             return
@@ -345,7 +345,7 @@ class GangleBot:
                 await query.answer()
             except Exception as e:
                 logger.error(f"Failed to show confirmation: {e}")
-                await query.answer(f"🎯 Confirm your guess: {final_guess}° - Click confirm to submit!", show_alert=True)
+                await query.answer("🎯 Click confirm to submit your guess!", show_alert=True)
             return
         
         # Continue to next digit selection
@@ -401,20 +401,22 @@ class GangleBot:
             await query.answer("❌ Failed to submit guess. Round may have ended.", show_alert=True)
             return
         
+        # Get the temporary message ID before cleaning up state
+        state = self.user_guess_states[state_key]
+        temp_message_id = state.get('temp_message_id')
+        
         # Clean up state
         del self.user_guess_states[state_key]
         
-        # Update the message to show submission confirmation
-        try:
-            await query.edit_message_text(
-                f"✅ Guess Submitted Successfully!\n\n"
-                f"🎯 Your guess: {guess}°\n\n"
-                f"⏳ Waiting for other players..."
-            )
-        except Exception as e:
-            logger.error(f"Failed to update confirmation message: {e}")
+        # Clean up the temporary message (delete it to maintain privacy)
+        if temp_message_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=temp_message_id)
+            except Exception as e:
+                logger.error(f"Failed to delete temporary message: {e}")
         
-        await query.answer(f"✅ Guess {guess}° submitted successfully!", show_alert=False)
+        # Send private confirmation (only visible to the user who clicked)
+        await query.answer("✅ Guess submitted successfully! Waiting for other players...", show_alert=True)
         
         # Update group status
         await self._update_round_status(chat_id, context)

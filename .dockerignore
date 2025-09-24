@@ -1,0 +1,53 @@
+# Git files
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentation and markdown (keep README.md but exclude others)
+*.md
+!README.md
+
+# Testing and development files
+TESTING.md
+setup.sh
+copilot-instructions.md
+
+# Environment file (will be provided at runtime)
+.env
+
+# Logs (will be generated in container)
+*.log
+
+# Data directory (will be mounted as volume)
+data/
