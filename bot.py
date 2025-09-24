@@ -37,6 +37,7 @@ class GangleBot:
         self.app.add_handler(CommandHandler("leaderboard", self.show_leaderboard))
         self.app.add_handler(CommandHandler("forfeit", self.forfeit_player))
         self.app.add_handler(CommandHandler("reset_leaderboard", self.reset_leaderboard))
+        self.app.add_handler(CommandHandler("end_round", self.end_round))
         self.app.add_handler(CommandHandler("help", self.show_help))
         
         # Callback query handler for inline buttons
@@ -47,6 +48,15 @@ class GangleBot:
             filters.TEXT & ~filters.COMMAND, 
             self.handle_guess_message
         ))
+    
+    async def _is_user_admin(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
+        """Check if a user is an admin in the chat."""
+        try:
+            chat_member = await context.bot.get_chat_member(chat_id, user_id)
+            return chat_member.status in ['administrator', 'creator']
+        except Exception as e:
+            logger.error(f"Error checking admin status: {e}")
+            return False
         
         # Error handler
         self.app.add_error_handler(self.error_handler)
@@ -105,7 +115,7 @@ class GangleBot:
             )
             
             # Create the round
-            round_obj = game_manager.create_round(chat_id, message.message_id)
+            round_obj = game_manager.create_round(chat_id, message.message_id, update.effective_user.id)
             
             # Generate and send angle image
             angle_image = render_angle(round_obj.angle, show_label=False)
@@ -631,6 +641,69 @@ class GangleBot:
         else:
             await update.message.reply_text("❌ Failed to reset leaderboard.")
     
+    async def end_round(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /end_round command (admin or starter only)."""
+        if not update.message or not update.message.chat or not update.message.from_user:
+            return
+        
+        chat_id = update.message.chat.id
+        user_id = update.message.from_user.id
+        
+        # Check if there's an active round
+        round_obj = game_manager.get_active_round(chat_id)
+        if not round_obj:
+            await update.message.reply_text("❌ No active round to end.")
+            return
+        
+        # Check if user is admin or the starter of the round
+        is_admin = await self._is_user_admin(context, chat_id, user_id)
+        is_starter = round_obj.starter_user_id == user_id
+        
+        if not is_admin and not is_starter:
+            await update.message.reply_text(
+                "🚫 Only group admins or the player who started this round can end it."
+            )
+            return
+        
+        # End the round
+        results = game_manager.end_round(chat_id, user_id, is_admin)
+        if results:
+            # Create reveal image with the correct angle
+            reveal_image = render_angle(results['angle'], show_label=True)
+            
+            # Prepare results text
+            results_text = "⏹️ **Round Ended Early!**\n\n"
+            results_text += f"🎯 **Correct Angle:** {results['angle']}°\n\n"
+            
+            if results['scores']:
+                results_text += "🏆 **Results:**\n"
+                for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
+                    emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                    results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                
+                if len(results['scores']) > 5:
+                    results_text += f"\n... and {len(results['scores']) - 5} more players"
+            else:
+                results_text += "😔 No valid submissions this round."
+            
+            results_text += f"\n\n👥 **Participation:** {results['players_participated']}/{results['total_players']} players"
+            
+            # Send reveal image and results
+            try:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(reveal_image, filename="reveal.png"),
+                    caption=results_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+                logger.info(f"Round ended early in group {chat_id} by user {user_id}")
+            
+            except Exception as e:
+                logger.error(f"Failed to send round results in group {chat_id}: {e}")
+        else:
+            await update.message.reply_text("❌ Failed to end round.")
+    
     async def show_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command."""
         if not update.message:
@@ -650,7 +723,8 @@ class GangleBot:
             "• `/help` - Show this help message\n\n"
             "**Admin Commands:**\n"
             "• `/forfeit @username` - Remove player from round\n"
-            "• `/reset_leaderboard` - Reset all scores\n\n"
+            "• `/reset_leaderboard` - Reset all scores\n"
+            "• `/end_round` - End current round early (admin or starter only)\n\n"
             "**Scoring:**\n"
             "• Perfect guess (0° off): 100 points\n"
             "• Points decrease with accuracy\n"

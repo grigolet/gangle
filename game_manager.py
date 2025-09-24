@@ -33,6 +33,7 @@ class GameRound:
     start_time: datetime
     players: Dict[int, Player]
     status: str  # 'waiting_for_guesses' or 'completed'
+    starter_user_id: Optional[int] = None  # User who started this round
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert round to dictionary for storage."""
@@ -43,7 +44,8 @@ class GameRound:
             'players': {str(uid): p.username for uid, p in self.players.items()},
             'guesses': {str(uid): p.guess for uid, p in self.players.items() if p.guess is not None},
             'forfeited': [uid for uid, p in self.players.items() if p.is_forfeited],
-            'status': self.status
+            'status': self.status,
+            'starter_user_id': self.starter_user_id
         }
     
     @classmethod
@@ -75,7 +77,8 @@ class GameRound:
             message_id=data['message_id'],
             start_time=datetime.fromisoformat(data['start_time']),
             players=players,
-            status=data['status']
+            status=data['status'],
+            starter_user_id=data.get('starter_user_id')
         )
 
 
@@ -93,13 +96,14 @@ class GameManager:
         logger.info("Loading active rounds from storage...")
         # Implementation would scan the games directory and load active rounds
     
-    def create_round(self, group_id: int, message_id: int) -> GameRound:
+    def create_round(self, group_id: int, message_id: int, starter_user_id: Optional[int] = None) -> GameRound:
         """
         Create a new game round.
         
         Args:
             group_id: The Telegram group ID
             message_id: The message ID of the round announcement
+            starter_user_id: The user ID of who started this round
             
         Returns:
             The created GameRound
@@ -119,7 +123,8 @@ class GameManager:
             message_id=message_id,
             start_time=datetime.utcnow(),
             players={},
-            status='waiting_for_guesses'
+            status='waiting_for_guesses',
+            starter_user_id=starter_user_id
         )
         
         self.active_rounds[group_id] = round_obj
@@ -345,6 +350,30 @@ class GameManager:
         
         logger.info(f"Round completed for group {group_id}, {len(scores)} players participated")
         return results
+    
+    def end_round(self, group_id: int, ended_by_user_id: int, is_admin: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        End the current round prematurely (admin/starter only).
+        
+        Args:
+            group_id: The Telegram group ID
+            ended_by_user_id: The user ID of who is ending the round
+            is_admin: Whether the user ending the round is an admin
+            
+        Returns:
+            Round results dictionary or None if no active round or unauthorized
+        """
+        round_obj = self.get_active_round(group_id)
+        if not round_obj or round_obj.status != 'waiting_for_guesses':
+            return None
+        
+        # Check if user is the starter of the round or an admin
+        if not is_admin and round_obj.starter_user_id != ended_by_user_id:
+            logger.warning(f"User {ended_by_user_id} attempted to end round in group {group_id} but is not authorized")
+            return None
+        
+        logger.info(f"Round ended prematurely by user {ended_by_user_id} in group {group_id}")
+        return self.complete_round(group_id)
     
     def get_leaderboard(self, group_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         """
