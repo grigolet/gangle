@@ -201,39 +201,25 @@ class GangleBot:
         # Show number picker for hundreds digit
         keyboard = self._create_number_picker_keyboard(state_key, step=0)
         
-        # Send the number picker as a new message to the user privately
+        # Send a temporary message for this user's guess selection
         try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="🎯 **Select your angle guess:**\n\nStep 1/3: Choose the hundreds digit (0-3)",
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN
+            temp_message = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🎯 {first_name}, select your angle guess:\n\nStep 1/3: Choose hundreds digit (0-3)\n⚠️ Only you can interact with these buttons!",
+                reply_markup=keyboard
             )
             
-            await query.answer("📱 Check the number picker I just sent you!", show_alert=False)
+            # Store the temporary message ID for cleanup
+            self.user_guess_states[state_key]['temp_message_id'] = temp_message.message_id
+            
+            await query.answer("🎯 Use the number picker below to select your guess!", show_alert=False)
             
         except Exception as e:
-            # If we can't send private message, show inline picker in group
-            logger.warning(f"Failed to send private picker to user {user_id}: {e}")
-            
-            # Send as ephemeral message in group instead
-            picker_text = (
-                f"🎯 **{first_name}, select your guess:**\n\n"
-                f"Step 1/3: Choose hundreds digit (0-3)\n"
-                f"⚠️ Only you can see and use these buttons!"
+            logger.error(f"Failed to send number picker message: {e}")
+            await query.answer(
+                "🎯 Starting number picker... Choose hundreds digit (0-3)",
+                show_alert=True
             )
-            
-            # Edit the original message to show the picker
-            try:
-                await query.edit_message_reply_markup(reply_markup=keyboard)
-                await query.answer(picker_text, show_alert=True)
-            except Exception as edit_error:
-                # If editing fails, just show alert
-                logger.error(f"Failed to edit message for number picker: {edit_error}")
-                await query.answer(
-                    "🎯 Choose hundreds digit: 0, 1, 2, or 3\nThen I'll ask for tens and units digits.",
-                    show_alert=True
-                )
     
     def _create_number_picker_keyboard(self, state_key: str, step: int, max_digit: Optional[int] = None) -> InlineKeyboardMarkup:
         """Create number picker keyboard for current step."""
@@ -298,14 +284,14 @@ class GangleBot:
             next_step = 1
             max_digit = 5 if digit == 3 else 9
             next_keyboard = self._create_number_picker_keyboard(state_key, next_step, max_digit)
-            message = f"🎯 **Step 2/3: Choose tens digit (0-{max_digit})**\n\nYour guess so far: {digit}__"
+            message = f"🎯 Step 2/3: Choose tens digit (0-{max_digit})\n\nYour guess so far: {digit}__"
             
         elif step == 1:  # Just selected tens, now select units
             next_step = 2
             current_value = state['guess'][0] * 100 + digit * 10
             max_digit = 5 if current_value >= 350 else 9
             next_keyboard = self._create_number_picker_keyboard(state_key, next_step, max_digit)
-            message = f"🎯 **Step 3/3: Choose units digit (0-{max_digit})**\n\nYour guess so far: {state['guess'][0]}{digit}_"
+            message = f"🎯 Step 3/3: Choose units digit (0-{max_digit})\n\nYour guess so far: {state['guess'][0]}{digit}_"
             
         else:  # Just selected units - show confirmation
             final_guess = state['guess'][0] * 100 + state['guess'][1] * 10 + digit
@@ -314,10 +300,27 @@ class GangleBot:
                 [InlineKeyboardButton("🔄 Start Over", callback_data=f"guess_{chat_id}")],
                 [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{chat_id}_{user_id}")]
             ])
-            message = f"🎯 **Confirm your guess: {final_guess}°**\n\nClick ✅ to submit or 🔄 to start over."
+            message = f"🎯 Confirm your guess: {final_guess}°\n\nClick ✅ to submit or 🔄 to start over."
             
             try:
-                await query.edit_message_text(message, reply_markup=confirmation_keyboard, parse_mode=ParseMode.MARKDOWN)
+                # Get the temporary message ID from state
+                temp_message_id = state.get('temp_message_id')
+                if temp_message_id:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=temp_message_id,
+                        text=message,
+                        reply_markup=confirmation_keyboard
+                    )
+                else:
+                    # Fallback: send new message
+                    new_message = await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        reply_markup=confirmation_keyboard
+                    )
+                    self.user_guess_states[state_key]['temp_message_id'] = new_message.message_id
+                
                 await query.answer()
             except Exception as e:
                 logger.error(f"Failed to show confirmation: {e}")
@@ -326,7 +329,24 @@ class GangleBot:
         
         # Continue to next digit selection
         try:
-            await query.edit_message_text(message, reply_markup=next_keyboard, parse_mode=ParseMode.MARKDOWN)
+            # Get the temporary message ID from state
+            temp_message_id = state.get('temp_message_id')
+            if temp_message_id:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=temp_message_id,
+                    text=message,
+                    reply_markup=next_keyboard
+                )
+            else:
+                # Fallback: send new message
+                new_message = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    reply_markup=next_keyboard
+                )
+                self.user_guess_states[state_key]['temp_message_id'] = new_message.message_id
+            
             await query.answer()
         except Exception as e:
             logger.error(f"Failed to update number picker: {e}")
@@ -366,10 +386,9 @@ class GangleBot:
         # Update the message to show submission confirmation
         try:
             await query.edit_message_text(
-                f"✅ **Guess Submitted Successfully!**\n\n"
-                f"🎯 Your guess: **{guess}°**\n\n"
-                f"⏳ Waiting for other players...",
-                parse_mode=ParseMode.MARKDOWN
+                f"✅ Guess Submitted Successfully!\n\n"
+                f"🎯 Your guess: {guess}°\n\n"
+                f"⏳ Waiting for other players..."
             )
         except Exception as e:
             logger.error(f"Failed to update confirmation message: {e}")
@@ -403,9 +422,8 @@ class GangleBot:
         
         try:
             await query.edit_message_text(
-                "❌ **Guess Cancelled**\n\n"
-                "Click the 'Guess' button again to restart.",
-                parse_mode=ParseMode.MARKDOWN
+                "❌ Guess Cancelled\n\n"
+                "Click the 'Guess' button again to restart."
             )
         except Exception as e:
             logger.error(f"Failed to update cancellation message: {e}")
