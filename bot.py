@@ -495,7 +495,7 @@ class GangleBot:
             results_text += "🏆 **Results:**\n"
             for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
                 emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                results_text += f"{emoji} @{player.username}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
             
             if len(results['scores']) > 5:
                 results_text += f"\n... and {len(results['scores']) - 5} more players"
@@ -548,7 +548,7 @@ class GangleBot:
             rank_emoji = "🥇" if player['rank'] == 1 else "🥈" if player['rank'] == 2 else "🥉" if player['rank'] == 3 else f"{player['rank']}."
             
             leaderboard_text += (
-                f"{rank_emoji} **{player['first_name']}**\n"
+                f"{rank_emoji} **@{player['username']}**\n"
                 f"    💯 {player['total_points']} points\n"
                 f"    🎮 {player['rounds_played']} rounds\n"
                 f"    🎯 Best: ±{player['best_guess']}°\n\n"
@@ -681,7 +681,7 @@ class GangleBot:
                 results_text += "🏆 **Results:**\n"
                 for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
                     emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                    results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                    results_text += f"{emoji} @{player.username}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
                 
                 if len(results['scores']) > 5:
                     results_text += f"\n... and {len(results['scores']) - 5} more players"
