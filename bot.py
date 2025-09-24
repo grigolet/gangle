@@ -117,6 +117,17 @@ class GangleBot:
             # Create the round
             round_obj = game_manager.create_round(chat_id, message.message_id, update.effective_user.id)
             
+            # Try to get an estimate of chat members (for better round management)
+            try:
+                member_count = await context.bot.get_chat_member_count(chat_id)
+                # Store estimated member count (excluding bots, we'll estimate ~80% are real users)
+                estimated_players = max(2, min(20, int(member_count * 0.8)))
+                game_manager.set_estimated_players(chat_id, estimated_players)
+                logger.info(f"Estimated {estimated_players} potential players for group {chat_id} (total members: {member_count})")
+            except Exception as e:
+                logger.warning(f"Could not get member count for group {chat_id}: {e}")
+                game_manager.set_estimated_players(chat_id, 5)  # Default estimate
+            
             # Generate and send angle image
             angle_image = render_angle(round_obj.angle, show_label=False)
             
@@ -390,22 +401,20 @@ class GangleBot:
             await query.answer("❌ Failed to submit guess. Round may have ended.", show_alert=True)
             return
         
-        # Get the temporary message ID before cleaning up state
-        state = self.user_guess_states[state_key]
-        temp_message_id = state.get('temp_message_id')
-        
         # Clean up state
         del self.user_guess_states[state_key]
         
-        # Clean up the temporary message (delete it to maintain privacy)
-        if temp_message_id:
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=temp_message_id)
-            except Exception as e:
-                logger.error(f"Failed to delete temporary message: {e}")
+        # Update the message to show submission confirmation
+        try:
+            await query.edit_message_text(
+                f"✅ Guess Submitted Successfully!\n\n"
+                f"🎯 Your guess: {guess}°\n\n"
+                f"⏳ Waiting for other players..."
+            )
+        except Exception as e:
+            logger.error(f"Failed to update confirmation message: {e}")
         
-        # Send private confirmation (only visible to the user who clicked)
-        await query.answer("✅ Guess submitted successfully! Waiting for other players...", show_alert=True)
+        await query.answer(f"✅ Guess {guess}° submitted successfully!", show_alert=False)
         
         # Update group status
         await self._update_round_status(chat_id, context)
@@ -456,13 +465,19 @@ class GangleBot:
         
         status_text = (
             f"🎯 **Round Status**\n\n"
-            f"👥 **Players:** {status['total_players']}\n"
+            f"👥 **Active Players:** {status['active_players']}\n"
             f"✅ **Submitted:** {status['players_submitted']}\n"
             f"⏳ **Pending:** {status['players_pending']}\n"
         )
         
         if status['players_forfeited'] > 0:
             status_text += f"❌ **Forfeited:** {status['players_forfeited']}\n"
+        
+        # Add timing information
+        if status['can_complete_in'] > 0:
+            status_text += f"⏰ **Min wait:** {int(status['can_complete_in'])}s remaining\n"
+        elif status['time_elapsed'] < 120:
+            status_text += f"⏰ **Time elapsed:** {int(status['time_elapsed'])}s\n"
         
         try:
             await context.bot.send_message(
@@ -495,7 +510,7 @@ class GangleBot:
             results_text += "🏆 **Results:**\n"
             for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
                 emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                results_text += f"{emoji} @{player.username}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
             
             if len(results['scores']) > 5:
                 results_text += f"\n... and {len(results['scores']) - 5} more players"
@@ -548,7 +563,7 @@ class GangleBot:
             rank_emoji = "🥇" if player['rank'] == 1 else "🥈" if player['rank'] == 2 else "🥉" if player['rank'] == 3 else f"{player['rank']}."
             
             leaderboard_text += (
-                f"{rank_emoji} **@{player['username']}**\n"
+                f"{rank_emoji} **{player['first_name']}**\n"
                 f"    💯 {player['total_points']} points\n"
                 f"    🎮 {player['rounds_played']} rounds\n"
                 f"    🎯 Best: ±{player['best_guess']}°\n\n"
@@ -681,7 +696,7 @@ class GangleBot:
                 results_text += "🏆 **Results:**\n"
                 for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
                     emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                    results_text += f"{emoji} @{player.username}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                    results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
                 
                 if len(results['scores']) > 5:
                     results_text += f"\n... and {len(results['scores']) - 5} more players"

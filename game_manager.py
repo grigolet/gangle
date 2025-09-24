@@ -34,6 +34,7 @@ class GameRound:
     players: Dict[int, Player]
     status: str  # 'waiting_for_guesses' or 'completed'
     starter_user_id: Optional[int] = None  # User who started this round
+    estimated_players: int = 2  # Estimated number of potential players in the group
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert round to dictionary for storage."""
@@ -45,7 +46,8 @@ class GameRound:
             'guesses': {str(uid): p.guess for uid, p in self.players.items() if p.guess is not None},
             'forfeited': [uid for uid, p in self.players.items() if p.is_forfeited],
             'status': self.status,
-            'starter_user_id': self.starter_user_id
+            'starter_user_id': self.starter_user_id,
+            'estimated_players': self.estimated_players
         }
     
     @classmethod
@@ -78,7 +80,8 @@ class GameRound:
             start_time=datetime.fromisoformat(data['start_time']),
             players=players,
             status=data['status'],
-            starter_user_id=data.get('starter_user_id')
+            starter_user_id=data.get('starter_user_id'),
+            estimated_players=data.get('estimated_players', 2)
         )
 
 
@@ -146,6 +149,14 @@ class GameManager:
             return round_obj
         
         return None
+    
+    def set_estimated_players(self, group_id: int, estimated_count: int):
+        """Set the estimated number of players for an active round."""
+        round_obj = self.get_active_round(group_id)
+        if round_obj:
+            round_obj.estimated_players = max(2, estimated_count)
+            storage.save_active_game(group_id, round_obj.to_dict())
+            logger.info(f"Set estimated players to {round_obj.estimated_players} for group {group_id}")
     
     def add_player(self, group_id: int, user_id: int, username: str, first_name: str) -> bool:
         """
@@ -247,17 +258,39 @@ class GameManager:
         if not round_obj:
             return None
         
-        total_players = len(round_obj.players)
+        active_players = len(round_obj.players)  # Players who clicked "Guess"
         players_submitted = len([p for p in round_obj.players.values() if p.guess is not None])
         players_forfeited = len([p for p in round_obj.players.values() if p.is_forfeited])
-        players_pending = total_players - players_submitted - players_forfeited
+        players_pending = active_players - players_submitted - players_forfeited
+        
+        # Calculate time elapsed
+        time_elapsed = datetime.utcnow() - round_obj.start_time
+        time_elapsed_seconds = time_elapsed.total_seconds()
+        
+        # Smart completion logic:
+        # 1. If less than 30 seconds have passed, never end (give people time to join)
+        # 2. After 30 seconds, end if all active players submitted
+        # 3. After 2 minutes, end regardless (reasonable waiting time)
+        min_wait_time = 30  # seconds
+        max_wait_time = 120  # seconds
+        
+        can_complete = False
+        if time_elapsed_seconds >= max_wait_time:
+            # After max wait time, always complete
+            can_complete = True
+        elif time_elapsed_seconds >= min_wait_time and players_pending == 0 and active_players > 0:
+            # After min wait time, complete if all active players finished
+            can_complete = True
         
         return {
-            'total_players': total_players,
+            'active_players': active_players,  # Players who clicked "Guess" 
+            'estimated_players': round_obj.estimated_players,  # Total estimated group members
             'players_submitted': players_submitted,
             'players_forfeited': players_forfeited,
             'players_pending': players_pending,
-            'all_submitted': players_pending == 0,
+            'all_submitted': can_complete,
+            'time_elapsed': time_elapsed_seconds,
+            'can_complete_in': max(0, min_wait_time - time_elapsed_seconds) if not can_complete else 0,
             'start_time': round_obj.start_time,
             'angle': round_obj.angle,  # Only for reveal phase
             'message_id': round_obj.message_id
