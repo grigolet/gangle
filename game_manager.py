@@ -33,6 +33,7 @@ class GameRound:
     start_time: datetime
     players: Dict[int, Player]
     status: str  # 'waiting_for_guesses' or 'completed'
+    angle_image_message_id: Optional[int] = None  # Message ID of the angle image with guess button
     starter_user_id: Optional[int] = None  # User who started this round
     estimated_players: int = 2  # Estimated number of potential players in the group
     
@@ -41,6 +42,7 @@ class GameRound:
         return {
             'angle': self.angle,
             'message_id': self.message_id,
+            'angle_image_message_id': self.angle_image_message_id,
             'start_time': self.start_time.isoformat(),
             'players': {str(uid): p.username for uid, p in self.players.items()},
             'guesses': {str(uid): p.guess for uid, p in self.players.items() if p.guess is not None},
@@ -80,6 +82,7 @@ class GameRound:
             start_time=datetime.fromisoformat(data['start_time']),
             players=players,
             status=data['status'],
+            angle_image_message_id=data.get('angle_image_message_id'),
             starter_user_id=data.get('starter_user_id'),
             estimated_players=data.get('estimated_players', 2)
         )
@@ -157,6 +160,26 @@ class GameManager:
             round_obj.estimated_players = max(2, estimated_count)
             storage.save_active_game(group_id, round_obj.to_dict())
             logger.info(f"Set estimated players to {round_obj.estimated_players} for group {group_id}")
+    
+    def set_angle_image_message_id(self, group_id: int, message_id: int) -> bool:
+        """
+        Set the angle image message ID for the active round.
+        
+        Args:
+            group_id: The Telegram group ID  
+            message_id: The message ID of the angle image with guess button
+            
+        Returns:
+            True if set successfully, False otherwise
+        """
+        round_obj = self.get_active_round(group_id)
+        if not round_obj:
+            return False
+        
+        round_obj.angle_image_message_id = message_id
+        storage.save_active_game(group_id, round_obj.to_dict())
+        logger.info(f"Set angle image message ID to {message_id} for group {group_id}")
+        return True
     
     def add_player(self, group_id: int, user_id: int, username: str, first_name: str) -> bool:
         """

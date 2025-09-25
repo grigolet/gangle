@@ -141,13 +141,16 @@ class GangleBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             # Send the image with guess button
-            await context.bot.send_photo(
+            angle_message = await context.bot.send_photo(
                 chat_id=chat_id,
                 photo=InputFile(angle_image, filename="angle.png"),
                 caption="📐 **Guess the angle!** (0-359 degrees)\n\nClick the button below to submit your guess privately.",
                 reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
+            
+            # Store the angle image message ID for later cleanup
+            game_manager.set_angle_image_message_id(chat_id, angle_message.message_id)
             
             # Update the initial message
             await message.edit_text(
@@ -181,6 +184,8 @@ class GangleBot:
             await self._handle_guess_confirmation(update, context)
         elif query.data.startswith("cancel_"):
             await self._handle_guess_cancellation(update, context)
+        elif query.data == "completed":
+            await self._handle_completed_round_button(update, context)
     
     async def _handle_guess_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle initial guess button press."""
@@ -197,7 +202,15 @@ class GangleBot:
         round_obj = game_manager.get_active_round(chat_id)
         if not round_obj:
             await query.answer(
-                "❌ No active round found. Use /start_round to begin a new round.",
+                "❌ This round has ended. Use /start_round to begin a new round.",
+                show_alert=True
+            )
+            return
+        
+        # Check if round is still accepting guesses
+        if round_obj.status != 'waiting_for_guesses':
+            await query.answer(
+                "✅ This round has completed. Use /start_round to begin a new round.",
                 show_alert=True
             )
             return
@@ -474,6 +487,14 @@ class GangleBot:
         
         await query.answer("❌ Guess cancelled. Click Guess again to restart.", show_alert=False)
     
+    async def _handle_completed_round_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle clicks on the disabled button from completed rounds."""
+        query = update.callback_query
+        if not query:
+            return
+        
+        await query.answer("✅ This round has already completed! Use /start_round to begin a new round.", show_alert=True)
+    
     async def handle_guess_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages (no longer needed for guess submission)."""
         # This method is kept for backward compatibility but doesn't process guesses anymore
@@ -579,6 +600,9 @@ class GangleBot:
             # Send leaderboard after results
             await self._send_leaderboard_to_chat(chat_id, context)
             
+            # Disable the guess button to prevent further interactions
+            await self._disable_guess_button(chat_id, context)
+            
             # Cancel any scheduled status updates
             if hasattr(self, 'status_update_jobs') and chat_id in self.status_update_jobs:
                 self.status_update_jobs[chat_id].schedule_removal()
@@ -615,6 +639,25 @@ class GangleBot:
             text=text,
             parse_mode=ParseMode.MARKDOWN
         )
+    
+    async def _disable_guess_button(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Disable the guess button from the angle image when round completes."""
+        round_obj = game_manager.get_active_round(chat_id)
+        if not round_obj or not round_obj.angle_image_message_id:
+            return
+        
+        try:
+            # Edit the message to remove the inline keyboard
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=round_obj.angle_image_message_id,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Round Completed", callback_data="completed")
+                ]])
+            )
+            logger.info(f"Disabled guess button for completed round in group {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to disable guess button in group {chat_id}: {e}")
     
     def _schedule_status_updates(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Schedule periodic status updates every 10 seconds."""
@@ -835,6 +878,9 @@ class GangleBot:
                     caption=results_text,
                     parse_mode=ParseMode.MARKDOWN
                 )
+                
+                # Disable the guess button to prevent further interactions
+                await self._disable_guess_button(chat_id, context)
                 
                 logger.info(f"Round ended early in group {chat_id} by user {user_id}")
             
