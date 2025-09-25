@@ -27,6 +27,7 @@ class GangleBot:
         """Initialize the bot."""
         self.app = Application.builder().token(config.telegram_bot_token).build()
         self.user_guess_states: Dict[str, Dict[str, Any]] = {}  # "chat_id:user_id" -> guess state
+        self.status_update_jobs: Dict[int, Any] = {}  # chat_id -> job for status updates
         self._setup_handlers()
     
     def _setup_handlers(self):
@@ -115,6 +116,10 @@ class GangleBot:
             )
             
             # Create the round
+            if not update.effective_user:
+                await update.message.reply_text("❌ Unable to identify user. Please try again.")
+                return
+            
             round_obj = game_manager.create_round(chat_id, message.message_id, update.effective_user.id)
             
             # Try to get an estimate of chat members (for better round management)
@@ -491,11 +496,19 @@ class GangleBot:
         if status['players_forfeited'] > 0:
             status_text += f"❌ **Forfeited:** {status['players_forfeited']}\n"
         
-        # Add timing information
+        # Add timing information - show remaining time instead of elapsed time
         if status['can_complete_in'] > 0:
-            status_text += f"⏰ **Min wait:** {int(status['can_complete_in'])}s remaining\n"
-        elif status['time_elapsed'] < 120:
-            status_text += f"⏰ **Time elapsed:** {int(status['time_elapsed'])}s\n"
+            status_text += f"⏰ **Time until auto-complete:** {int(status['can_complete_in'])}s remaining\n"
+        elif status['all_submitted']:
+            status_text += "✨ **Round ready to complete!**\n"
+        else:
+            # Show time remaining until max wait time
+            from config import config
+            max_wait_remaining = max(0, config.max_wait_time - status['time_elapsed'])
+            if max_wait_remaining > 0:
+                status_text += f"⏰ **Max wait time:** {int(max_wait_remaining)}s remaining\n"
+            else:
+                status_text += f"⏰ **Time elapsed:** {int(status['time_elapsed'])}s\n"
         
         try:
             await context.bot.send_message(
@@ -509,13 +522,26 @@ class GangleBot:
     async def _check_round_completion(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Check if round should be completed and handle completion."""
         status = game_manager.get_round_status(chat_id)
-        if not status or not status['all_submitted']:
+        if not status:
+            print(f"DEBUG: No status for chat {chat_id}")
             return
+            
+        print(f"DEBUG: Round status for chat {chat_id}: all_submitted={status['all_submitted']}, can_complete={status['can_complete']}, time_elapsed={status['time_elapsed']}")
+        
+        # Check if round can be completed (either all submitted + min wait time, or max wait time reached)
+        if not status['can_complete']:
+            print(f"DEBUG: Round not ready to complete for chat {chat_id}")
+            return
+        
+        print(f"DEBUG: Attempting to complete round for chat {chat_id}")
         
         # Complete the round
         results = game_manager.complete_round(chat_id)
         if not results:
+            print(f"DEBUG: Failed to complete round for chat {chat_id}")
             return
+
+        print(f"DEBUG: Round completed successfully for chat {chat_id}, preparing results...")
         
         # Create reveal image with the correct angle
         reveal_image = render_angle(results['angle'], show_label=True)
@@ -541,6 +567,7 @@ class GangleBot:
         
         # Send reveal image and results
         try:
+            print(f"DEBUG: Sending results photo for chat {chat_id}")
             await context.bot.send_photo(
                 chat_id=chat_id,
                 photo=InputFile(reveal_image, filename="reveal.png"),
@@ -548,10 +575,80 @@ class GangleBot:
                 parse_mode=ParseMode.MARKDOWN
             )
             
+            print(f"DEBUG: Results sent, sending leaderboard for chat {chat_id}")
+            # Send leaderboard after results
+            await self._send_leaderboard_to_chat(chat_id, context)
+            
+            # Cancel any scheduled status updates
+            if hasattr(self, 'status_update_jobs') and chat_id in self.status_update_jobs:
+                self.status_update_jobs[chat_id].schedule_removal()
+                del self.status_update_jobs[chat_id]
+            
             logger.info(f"Round completed in group {chat_id} with {results['players_participated']} participants")
+            print(f"DEBUG: Round completion finished for chat {chat_id}")
         
         except Exception as e:
             logger.error(f"Failed to send round results in group {chat_id}: {e}")
+            print(f"DEBUG: Error sending results for chat {chat_id}: {e}")
+    
+    async def _send_leaderboard_to_chat(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Send leaderboard to a specific chat."""
+        leaderboard = game_manager.get_leaderboard(chat_id, limit=10)
+        
+        if not leaderboard:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="📊 **Leaderboard**\n\nNo games played yet!",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        text = "🏆 **Leaderboard** (Top 10)\n\n"
+        for i, player in enumerate(leaderboard, 1):
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            # Show username with @ prefix, fallback to first_name if no username
+            display_name = f"@{player['username']}" if player.get('username') else player['first_name']
+            text += f"{emoji} {display_name}: {player['total_points']} pts ({player['games_played']} games)\n"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    def _schedule_status_updates(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Schedule periodic status updates every 10 seconds."""
+        try:
+            # Cancel existing job if any
+            if chat_id in self.status_update_jobs:
+                self.status_update_jobs[chat_id].schedule_removal()
+                del self.status_update_jobs[chat_id]
+            
+            # Schedule new job if job_queue is available
+            if context.job_queue:
+                job = context.job_queue.run_repeating(
+                    callback=lambda context: self._periodic_status_update(chat_id, context),
+                    interval=10.0,  # 10 seconds
+                    first=10.0,  # Start after 10 seconds
+                    name=f"status_update_{chat_id}"
+                )
+                self.status_update_jobs[chat_id] = job
+                print(f"DEBUG: Scheduled periodic updates for chat {chat_id}")
+            else:
+                print(f"DEBUG: No job queue available, periodic updates disabled for chat {chat_id}")
+        except Exception as e:
+            print(f"DEBUG: Error scheduling status updates for chat {chat_id}: {e}")
+            logger.error(f"Error scheduling status updates for chat {chat_id}: {e}")
+    
+    async def _periodic_status_update(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Periodic status update callback."""
+        try:
+            print(f"DEBUG: Periodic status update for chat {chat_id}")
+            await self._update_round_status(chat_id, context)
+            await self._check_round_completion(chat_id, context)
+        except Exception as e:
+            print(f"DEBUG: Error in periodic status update for chat {chat_id}: {e}")
+            logger.error(f"Error in periodic status update for chat {chat_id}: {e}")
     
     async def show_leaderboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /leaderboard command."""

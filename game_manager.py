@@ -288,7 +288,8 @@ class GameManager:
             'players_submitted': players_submitted,
             'players_forfeited': players_forfeited,
             'players_pending': players_pending,
-            'all_submitted': can_complete,
+            'all_submitted': players_pending == 0 and active_players > 0,  # True if all active players submitted
+            'can_complete': can_complete,  # True if round can be completed based on timing rules
             'time_elapsed': time_elapsed_seconds,
             'can_complete_in': max(0, min_wait_time - time_elapsed_seconds) if not can_complete else 0,
             'start_time': round_obj.start_time,
