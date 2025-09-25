@@ -276,7 +276,7 @@ class GangleBot:
     async def _handle_number_picker(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle number picker button selection."""
         query = update.callback_query
-        if not query or not query.data:
+        if not query or not query.data or not query.from_user:
             return
         
         # Parse callback data: pick_{chat_id}_{user_id}_{step}_{digit}
@@ -289,6 +289,11 @@ class GangleBot:
         user_id = int(parts[2]) 
         step = int(parts[3])
         digit = int(parts[4])
+        
+        # Validate that the person clicking the button is the intended user
+        if query.from_user.id != user_id:
+            await query.answer("🚫 These buttons are for another player!", show_alert=True)
+            return
         
         state_key = f"{chat_id}:{user_id}"
         
@@ -376,7 +381,7 @@ class GangleBot:
     async def _handle_guess_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle guess confirmation."""
         query = update.callback_query
-        if not query or not query.data:
+        if not query or not query.data or not query.from_user:
             return
         
         # Parse callback data: confirm_{chat_id}_{user_id}_{guess}
@@ -388,6 +393,11 @@ class GangleBot:
         chat_id = int(parts[1])
         user_id = int(parts[2])
         guess = int(parts[3])
+        
+        # Validate that the person clicking the button is the intended user
+        if query.from_user.id != user_id:
+            await query.answer("🚫 This confirmation is for another player!", show_alert=True)
+            return
         
         state_key = f"{chat_id}:{user_id}"
         
@@ -427,7 +437,7 @@ class GangleBot:
     async def _handle_guess_cancellation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle guess cancellation."""
         query = update.callback_query
-        if not query or not query.data:
+        if not query or not query.data or not query.from_user:
             return
         
         # Parse callback data: cancel_{chat_id}_{user_id}
@@ -438,6 +448,12 @@ class GangleBot:
         
         chat_id = int(parts[1])
         user_id = int(parts[2])
+        
+        # Validate that the person clicking the button is the intended user
+        if query.from_user.id != user_id:
+            await query.answer("🚫 This cancellation is for another player!", show_alert=True)
+            return
+        
         state_key = f"{chat_id}:{user_id}"
         
         if state_key in self.user_guess_states:
@@ -512,7 +528,9 @@ class GangleBot:
             results_text += "🏆 **Results:**\n"
             for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
                 emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                # Show username with @ prefix, fallback to first_name if no username
+                display_name = f"@{player.username}" if player.username else player.first_name
+                results_text += f"{emoji} {display_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
             
             if len(results['scores']) > 5:
                 results_text += f"\n... and {len(results['scores']) - 5} more players"
@@ -564,8 +582,11 @@ class GangleBot:
         for player in leaderboard:
             rank_emoji = "🥇" if player['rank'] == 1 else "🥈" if player['rank'] == 2 else "🥉" if player['rank'] == 3 else f"{player['rank']}."
             
+            # Show username with @ prefix, fallback to first_name if no username
+            display_name = f"@{player['username']}" if player.get('username') else player['first_name']
+            
             leaderboard_text += (
-                f"{rank_emoji} **{player['first_name']}**\n"
+                f"{rank_emoji} **{display_name}**\n"
                 f"    💯 {player['total_points']} points\n"
                 f"    🎮 {player['rounds_played']} rounds\n"
                 f"    🎯 Best: ±{player['best_guess']}°\n\n"
@@ -698,7 +719,9 @@ class GangleBot:
                 results_text += "🏆 **Results:**\n"
                 for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
                     emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                    results_text += f"{emoji} {player.first_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                    # Show username with @ prefix, fallback to first_name if no username
+                    display_name = f"@{player.username}" if player.username else player.first_name
+                    results_text += f"{emoji} {display_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
                 
                 if len(results['scores']) > 5:
                     results_text += f"\n... and {len(results['scores']) - 5} more players"
