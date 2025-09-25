@@ -10,9 +10,10 @@ services:
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - MIN_PLAYERS=${MIN_PLAYERS:-2}
-      - MAX_WAIT_TIME=${MAX_WAIT_TIME:-300}
+      - MAX_PLAYERS_PER_ROUND=${MAX_PLAYERS_PER_ROUND:-50}
+      - POINTS_MAX=${POINTS_MAX:-100}
       - MIN_WAIT_TIME=${MIN_WAIT_TIME:-30}
+      - MAX_WAIT_TIME=${MAX_WAIT_TIME:-120}
     
     # Mount data directory as volume for persistence
     volumes:

@@ -268,11 +268,11 @@ class GameManager:
         time_elapsed_seconds = time_elapsed.total_seconds()
         
         # Smart completion logic:
-        # 1. If less than 30 seconds have passed, never end (give people time to join)
-        # 2. After 30 seconds, end if all active players submitted
-        # 3. After 2 minutes, end regardless (reasonable waiting time)
-        min_wait_time = 30  # seconds
-        max_wait_time = 120  # seconds
+        # 1. If less than min_wait_time seconds have passed, never end (give people time to join)
+        # 2. After min_wait_time seconds, end if all active players submitted
+        # 3. After max_wait_time seconds, end regardless (reasonable waiting time)
+        min_wait_time = config.min_wait_time  # seconds (configurable)
+        max_wait_time = config.max_wait_time  # seconds (configurable)
         
         can_complete = False
         if time_elapsed_seconds >= max_wait_time:

@@ -72,10 +72,21 @@ python bot.py
 Create a `.env` file with the following variables:
 
 ```env
+# Required
 TELEGRAM_BOT_TOKEN=your_bot_token_here
+
+# Optional (with defaults)
 LOG_LEVEL=INFO
 DATA_DIR=./data
+MAX_PLAYERS_PER_ROUND=50
+POINTS_MAX=100
+MIN_WAIT_TIME=30
+MAX_WAIT_TIME=120
 ```
+
+**Timing Configuration:**
+- `MIN_WAIT_TIME` - Minimum seconds to wait before round can end (allows players time to join)
+- `MAX_WAIT_TIME` - Maximum seconds to wait before round force ends (prevents indefinite waiting)
 
 ## Project Structure
 

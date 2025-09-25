@@ -34,6 +34,10 @@ class Config:
         self.round_timeout_minutes = int(os.getenv('ROUND_TIMEOUT_MINUTES', '10'))
         self.points_max = int(os.getenv('POINTS_MAX', '100'))
         
+        # Round timing configuration (in seconds)
+        self.min_wait_time = int(os.getenv('MIN_WAIT_TIME', '30'))  # Minimum wait before round can end
+        self.max_wait_time = int(os.getenv('MAX_WAIT_TIME', '120'))  # Maximum wait before round force ends
+        
         # Ensure data directories exist
         self._ensure_directories()
         

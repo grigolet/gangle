@@ -92,9 +92,10 @@ All configuration is done through environment variables in the `.env` file:
 
 - `TELEGRAM_BOT_TOKEN` - Your Telegram bot token (required)
 - `LOG_LEVEL` - Logging level (default: INFO)
-- `MIN_PLAYERS` - Minimum players to start a round (default: 2)
-- `MAX_WAIT_TIME` - Maximum wait time for players (default: 300 seconds)
-- `MIN_WAIT_TIME` - Minimum wait time for players (default: 30 seconds)
+- `MAX_PLAYERS_PER_ROUND` - Maximum players per round (default: 50)
+- `POINTS_MAX` - Maximum points for perfect guess (default: 100)
+- `MIN_WAIT_TIME` - Minimum wait time before round can end (default: 30 seconds)
+- `MAX_WAIT_TIME` - Maximum wait time before round force ends (default: 120 seconds)
 
 ### Data Persistence
 The bot stores game data in the `data/` directory:
