@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, ContextTypes, filters
+    MessageHandler, ContextTypes, filters, JobQueue
 )
 from telegram.constants import ParseMode
 
@@ -25,9 +25,13 @@ class GangleBot:
     
     def __init__(self):
         """Initialize the bot."""
+        # Build application with job queue enabled
+        if not config.telegram_bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN is required")
         self.app = Application.builder().token(config.telegram_bot_token).build()
         self.user_guess_states: Dict[str, Dict[str, Any]] = {}  # "chat_id:user_id" -> guess state
         self.status_update_jobs: Dict[int, Any] = {}  # chat_id -> job for status updates
+        self.completion_monitor_jobs: Dict[int, Any] = {}  # chat_id -> job for completion monitoring
         self._setup_handlers()
     
     def _setup_handlers(self):
@@ -159,6 +163,9 @@ class GangleBot:
                 "👥 **Status:** Waiting for players...",
                 parse_mode=ParseMode.MARKDOWN
             )
+            
+            # Start completion monitoring (check every 10 seconds)
+            self._start_completion_monitoring(chat_id, context)
             
             logger.info(f"Started new round in group {chat_id} with angle {round_obj.angle}°")
         
@@ -449,7 +456,7 @@ class GangleBot:
         # Update group status
         await self._update_round_status(chat_id, context)
         
-        # Check if round should end
+        # Check if round should end (but don't wait for return value since monitoring handles it)
         await self._check_round_completion(chat_id, context)
     
     async def _handle_guess_cancellation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -540,19 +547,23 @@ class GangleBot:
         except Exception as e:
             logger.error(f"Failed to update round status in group {chat_id}: {e}")
     
-    async def _check_round_completion(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-        """Check if round should be completed and handle completion."""
+    async def _check_round_completion(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Check if round should be completed and handle completion.
+        
+        Returns:
+            True if round was completed, False otherwise
+        """
         status = game_manager.get_round_status(chat_id)
         if not status:
             print(f"DEBUG: No status for chat {chat_id}")
-            return
+            return False
             
         print(f"DEBUG: Round status for chat {chat_id}: all_submitted={status['all_submitted']}, can_complete={status['can_complete']}, time_elapsed={status['time_elapsed']}")
         
         # Check if round can be completed (either all submitted + min wait time, or max wait time reached)
         if not status['can_complete']:
             print(f"DEBUG: Round not ready to complete for chat {chat_id}")
-            return
+            return False
         
         print(f"DEBUG: Attempting to complete round for chat {chat_id}")
         
@@ -560,7 +571,7 @@ class GangleBot:
         results = game_manager.complete_round(chat_id)
         if not results:
             print(f"DEBUG: Failed to complete round for chat {chat_id}")
-            return
+            return False
 
         print(f"DEBUG: Round completed successfully for chat {chat_id}, preparing results...")
         
@@ -603,6 +614,9 @@ class GangleBot:
             # Disable the guess button to prevent further interactions
             await self._disable_guess_button(chat_id, context)
             
+            # Stop completion monitoring
+            self._stop_completion_monitoring(chat_id)
+            
             # Cancel any scheduled status updates
             if hasattr(self, 'status_update_jobs') and chat_id in self.status_update_jobs:
                 self.status_update_jobs[chat_id].schedule_removal()
@@ -610,10 +624,12 @@ class GangleBot:
             
             logger.info(f"Round completed in group {chat_id} with {results['players_participated']} participants")
             print(f"DEBUG: Round completion finished for chat {chat_id}")
+            return True
         
         except Exception as e:
             logger.error(f"Failed to send round results in group {chat_id}: {e}")
             print(f"DEBUG: Error sending results for chat {chat_id}: {e}")
+            return False
     
     async def _send_leaderboard_to_chat(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Send leaderboard to a specific chat."""
@@ -692,6 +708,59 @@ class GangleBot:
         except Exception as e:
             print(f"DEBUG: Error in periodic status update for chat {chat_id}: {e}")
             logger.error(f"Error in periodic status update for chat {chat_id}: {e}")
+    
+    def _start_completion_monitoring(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Start periodic monitoring for round completion."""
+        try:
+            # Cancel existing job if any
+            if chat_id in self.completion_monitor_jobs:
+                self.completion_monitor_jobs[chat_id].schedule_removal()
+                del self.completion_monitor_jobs[chat_id]
+            
+            # Schedule new job to check completion every 10 seconds
+            if context.job_queue:
+                job = context.job_queue.run_repeating(
+                    callback=lambda context: self._monitor_round_completion(chat_id, context),
+                    interval=10.0,  # Check every 10 seconds
+                    first=10.0,  # Start after 10 seconds
+                    name=f"completion_monitor_{chat_id}"
+                )
+                self.completion_monitor_jobs[chat_id] = job
+                print(f"DEBUG: Started completion monitoring for chat {chat_id}")
+            else:
+                print(f"DEBUG: No job queue available, completion monitoring disabled for chat {chat_id}")
+        except Exception as e:
+            print(f"DEBUG: Error starting completion monitoring for chat {chat_id}: {e}")
+            logger.error(f"Error starting completion monitoring for chat {chat_id}: {e}")
+    
+    async def _monitor_round_completion(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Monitor for round completion - called periodically."""
+        try:
+            print(f"DEBUG: Monitoring round completion for chat {chat_id}")
+            
+            # Update status and check for completion
+            await self._update_round_status(chat_id, context)
+            completed = await self._check_round_completion(chat_id, context)
+            
+            # If round completed, stop monitoring
+            if completed:
+                print(f"DEBUG: Round completed, stopping monitoring for chat {chat_id}")
+                self._stop_completion_monitoring(chat_id)
+            
+        except Exception as e:
+            print(f"DEBUG: Error in completion monitoring for chat {chat_id}: {e}")
+            logger.error(f"Error in completion monitoring for chat {chat_id}: {e}")
+    
+    def _stop_completion_monitoring(self, chat_id: int):
+        """Stop the completion monitoring for a chat."""
+        try:
+            if chat_id in self.completion_monitor_jobs:
+                self.completion_monitor_jobs[chat_id].schedule_removal()
+                del self.completion_monitor_jobs[chat_id]
+                print(f"DEBUG: Stopped completion monitoring for chat {chat_id}")
+        except Exception as e:
+            print(f"DEBUG: Error stopping completion monitoring for chat {chat_id}: {e}")
+            logger.error(f"Error stopping completion monitoring for chat {chat_id}: {e}")
     
     async def show_leaderboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /leaderboard command."""
@@ -882,6 +951,9 @@ class GangleBot:
                 # Disable the guess button to prevent further interactions
                 await self._disable_guess_button(chat_id, context)
                 
+                # Stop completion monitoring
+                self._stop_completion_monitoring(chat_id)
+                
                 logger.info(f"Round ended early in group {chat_id} by user {user_id}")
             
             except Exception as e:
@@ -932,10 +1004,32 @@ class GangleBot:
             except Exception:
                 pass  # Don't raise on error handling
     
+    def _cleanup_all_jobs(self):
+        """Clean up all scheduled jobs."""
+        try:
+            # Clean up completion monitoring jobs
+            for chat_id in list(self.completion_monitor_jobs.keys()):
+                self._stop_completion_monitoring(chat_id)
+            
+            # Clean up status update jobs
+            for chat_id, job in list(self.status_update_jobs.items()):
+                try:
+                    job.schedule_removal()
+                    del self.status_update_jobs[chat_id]
+                except Exception as e:
+                    logger.error(f"Error cleaning up status job for {chat_id}: {e}")
+            
+            logger.info("All scheduled jobs cleaned up")
+        except Exception as e:
+            logger.error(f"Error during job cleanup: {e}")
+    
     def run(self):
         """Run the bot."""
         logger.info("Starting Gangle bot...")
-        self.app.run_polling(drop_pending_updates=True)
+        try:
+            self.app.run_polling(drop_pending_updates=True)
+        finally:
+            self._cleanup_all_jobs()
 
 
 def main():
