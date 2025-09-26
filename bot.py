@@ -732,10 +732,11 @@ class GangleBot:
             # Schedule new job if job_queue is available
             if context.job_queue:
                 job = context.job_queue.run_repeating(
-                    callback=lambda context: self._periodic_status_update(chat_id, context),
+                    callback=self._periodic_status_update_callback,
                     interval=10.0,  # 10 seconds
                     first=10.0,  # Start after 10 seconds
-                    name=f"status_update_{chat_id}"
+                    name=f"status_update_{chat_id}",
+                    data=chat_id  # Pass chat_id as data
                 )
                 self.status_update_jobs[chat_id] = job
                 print(f"DEBUG: Scheduled periodic updates for chat {chat_id}")
@@ -744,6 +745,12 @@ class GangleBot:
         except Exception as e:
             print(f"DEBUG: Error scheduling status updates for chat {chat_id}: {e}")
             logger.error(f"Error scheduling status updates for chat {chat_id}: {e}")
+    
+    async def _periodic_status_update_callback(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job queue callback for periodic status updates."""
+        if context.job and context.job.data and isinstance(context.job.data, int):
+            chat_id = context.job.data
+            await self._periodic_status_update(chat_id, context)
     
     async def _periodic_status_update(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Periodic status update callback."""
@@ -766,10 +773,11 @@ class GangleBot:
             # Schedule new job to check completion every 10 seconds
             if context.job_queue:
                 job = context.job_queue.run_repeating(
-                    callback=lambda context: self._monitor_round_completion(chat_id, context),
+                    callback=self._monitor_round_completion_callback,
                     interval=10.0,  # Check every 10 seconds
                     first=10.0,  # Start after 10 seconds
-                    name=f"completion_monitor_{chat_id}"
+                    name=f"completion_monitor_{chat_id}",
+                    data=chat_id  # Pass chat_id as data
                 )
                 self.completion_monitor_jobs[chat_id] = job
                 print(f"DEBUG: Started completion monitoring for chat {chat_id}")
@@ -778,6 +786,12 @@ class GangleBot:
         except Exception as e:
             print(f"DEBUG: Error starting completion monitoring for chat {chat_id}: {e}")
             logger.error(f"Error starting completion monitoring for chat {chat_id}: {e}")
+    
+    async def _monitor_round_completion_callback(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job queue callback for round completion monitoring."""
+        if context.job and context.job.data and isinstance(context.job.data, int):
+            chat_id = context.job.data
+            await self._monitor_round_completion(chat_id, context)
     
     async def _monitor_round_completion(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Monitor for round completion - called periodically."""
