@@ -38,7 +38,17 @@ class GangleBot:
         # Build application with job queue enabled
         if not config.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
-        self.app = Application.builder().token(config.telegram_bot_token).build()
+        
+        # Build application with job queue explicitly enabled
+        self.app = (
+            Application.builder()
+            .token(config.telegram_bot_token)
+            .build()
+        )
+        
+        # Check if job queue is available
+        print(f"DEBUG: Job queue available after init: {self.app.job_queue is not None}")
+        
         self.user_guess_states: Dict[str, Dict[str, Any]] = {}  # "chat_id:user_id" -> guess state
         self.status_update_jobs: Dict[int, Any] = {}  # chat_id -> job for status updates
         self.completion_monitor_jobs: Dict[int, Any] = {}  # chat_id -> job for completion monitoring
@@ -724,14 +734,20 @@ class GangleBot:
     def _schedule_status_updates(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Schedule periodic status updates every 10 seconds."""
         try:
+            # Debug logging
+            print(f"DEBUG: _schedule_status_updates called for chat {chat_id}")
+            
+            # Use self.app.job_queue instead of context.job_queue
+            job_queue = self.app.job_queue
+            
             # Cancel existing job if any
             if chat_id in self.status_update_jobs:
                 self.status_update_jobs[chat_id].schedule_removal()
                 del self.status_update_jobs[chat_id]
             
             # Schedule new job if job_queue is available
-            if context.job_queue:
-                job = context.job_queue.run_repeating(
+            if job_queue:
+                job = job_queue.run_repeating(
                     callback=self._periodic_status_update_callback,
                     interval=10.0,  # 10 seconds
                     first=10.0,  # Start after 10 seconds
@@ -765,14 +781,22 @@ class GangleBot:
     def _start_completion_monitoring(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         """Start periodic monitoring for round completion."""
         try:
+            # Debug logging
+            print(f"DEBUG: _start_completion_monitoring called for chat {chat_id}")
+            print(f"DEBUG: context.job_queue is: {context.job_queue}")
+            print(f"DEBUG: self.app.job_queue is: {self.app.job_queue}")
+            
+            # Use self.app.job_queue instead of context.job_queue
+            job_queue = self.app.job_queue
+            
             # Cancel existing job if any
             if chat_id in self.completion_monitor_jobs:
                 self.completion_monitor_jobs[chat_id].schedule_removal()
                 del self.completion_monitor_jobs[chat_id]
             
             # Schedule new job to check completion every 10 seconds
-            if context.job_queue:
-                job = context.job_queue.run_repeating(
+            if job_queue:
+                job = job_queue.run_repeating(
                     callback=self._monitor_round_completion_callback,
                     interval=10.0,  # Check every 10 seconds
                     first=10.0,  # Start after 10 seconds
