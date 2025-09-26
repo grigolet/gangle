@@ -20,6 +20,16 @@ from rendering import render_angle
 logger = logging.getLogger(__name__)
 
 
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Markdown V2 formatting."""
+    # Characters that need escaping in Markdown V2
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    escaped_text = text
+    for char in special_chars:
+        escaped_text = escaped_text.replace(char, '\\' + char)
+    return escaped_text
+
+
 class GangleBot:
     """Main bot class handling all Telegram interactions."""
     
@@ -579,23 +589,24 @@ class GangleBot:
         reveal_image = render_angle(results['angle'], show_label=True)
         
         # Prepare results text
-        results_text = "🎉 **Round Complete!**\n\n"
-        results_text += f"🎯 **Correct Angle:** {results['angle']}°\n\n"
+        results_text = "🎉 *Round Complete\\!*\n\n"
+        results_text += f"🎯 *Correct Angle:* {results['angle']}°\n\n"
         
         if results['scores']:
-            results_text += "🏆 **Results:**\n"
+            results_text += "🏆 *Results:*\n"
             for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
-                emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}\\."
                 # Show username with @ prefix, fallback to first_name if no username
-                display_name = f"@{player.username}" if player.username else player.first_name
-                results_text += f"{emoji} {display_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                raw_display_name = f"@{player.username}" if player.username else player.first_name
+                display_name = escape_markdown(raw_display_name)
+                results_text += f"{emoji} {display_name}: {player.guess}° \\({points} pts, ±{accuracy}°\\)\n"
             
             if len(results['scores']) > 5:
-                results_text += f"\n... and {len(results['scores']) - 5} more players"
+                results_text += f"\n\\.\\.\\. and {len(results['scores']) - 5} more players"
         else:
-            results_text += "😔 No valid submissions this round."
+            results_text += "😔 No valid submissions this round\\."
         
-        results_text += f"\n\n👥 **Participation:** {results['players_participated']}/{results['total_players']} players"
+        results_text += f"\n\n👥 *Participation:* {results['players_participated']}/{results['total_players']} players"
         
         # Send reveal image and results
         try:
@@ -604,7 +615,7 @@ class GangleBot:
                 chat_id=chat_id,
                 photo=InputFile(reveal_image, filename="reveal.png"),
                 caption=results_text,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN_V2
             )
             
             print(f"DEBUG: Results sent, sending leaderboard for chat {chat_id}")
@@ -638,22 +649,23 @@ class GangleBot:
         if not leaderboard:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="📊 **Leaderboard**\n\nNo games played yet!",
-                parse_mode=ParseMode.MARKDOWN
+                text="📊 *Leaderboard*\n\nNo games played yet\\!",
+                parse_mode=ParseMode.MARKDOWN_V2
             )
             return
 
-        text = "🏆 **Leaderboard** (Top 10)\n\n"
+        text = "🏆 *Leaderboard* \\(Top 10\\)\n\n"
         for i, player in enumerate(leaderboard, 1):
-            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}\\."
             # Show username with @ prefix, fallback to first_name if no username
-            display_name = f"@{player['username']}" if player.get('username') else player['first_name']
-            text += f"{emoji} {display_name}: {player['total_points']} pts ({player['games_played']} games)\n"
+            raw_display_name = f"@{player['username']}" if player.get('username') else player['first_name']
+            display_name = escape_markdown(raw_display_name)
+            text += f"{emoji} {display_name}: {player['total_points']} pts \\({player['games_played']} games\\)\n"
 
         await context.bot.send_message(
             chat_id=chat_id,
             text=text,
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN_V2
         )
     
     async def _disable_guess_button(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
@@ -780,28 +792,29 @@ class GangleBot:
         
         if not leaderboard:
             await update.message.reply_text(
-                "📊 **Leaderboard is empty!**\n\n"
-                "Start playing rounds to see player rankings here.",
-                parse_mode=ParseMode.MARKDOWN
+                "📊 *Leaderboard is empty\\!*\n\n"
+                "Start playing rounds to see player rankings here\\.",
+                parse_mode=ParseMode.MARKDOWN_V2
             )
             return
         
-        leaderboard_text = "🏆 **Gangle Leaderboard**\n\n"
+        leaderboard_text = "🏆 *Gangle Leaderboard*\n\n"
         
         for player in leaderboard:
-            rank_emoji = "🥇" if player['rank'] == 1 else "🥈" if player['rank'] == 2 else "🥉" if player['rank'] == 3 else f"{player['rank']}."
+            rank_emoji = "🥇" if player['rank'] == 1 else "🥈" if player['rank'] == 2 else "🥉" if player['rank'] == 3 else f"{player['rank']}\\."
             
             # Show username with @ prefix, fallback to first_name if no username
-            display_name = f"@{player['username']}" if player.get('username') else player['first_name']
+            raw_display_name = f"@{player['username']}" if player.get('username') else player['first_name']
+            display_name = escape_markdown(raw_display_name)
             
             leaderboard_text += (
-                f"{rank_emoji} **{display_name}**\n"
+                f"{rank_emoji} *{display_name}*\n"
                 f"    💯 {player['total_points']} points\n"
                 f"    🎮 {player['rounds_played']} rounds\n"
                 f"    🎯 Best: ±{player['best_guess']}°\n\n"
             )
         
-        await update.message.reply_text(leaderboard_text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(leaderboard_text, parse_mode=ParseMode.MARKDOWN_V2)
     
     async def forfeit_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /forfeit command (admin only)."""
@@ -921,23 +934,24 @@ class GangleBot:
             reveal_image = render_angle(results['angle'], show_label=True)
             
             # Prepare results text
-            results_text = "⏹️ **Round Ended Early!**\n\n"
-            results_text += f"🎯 **Correct Angle:** {results['angle']}°\n\n"
+            results_text = "⏹️ *Round Ended Early\\!*\n\n"
+            results_text += f"🎯 *Correct Angle:* {results['angle']}°\n\n"
             
             if results['scores']:
-                results_text += "🏆 **Results:**\n"
+                results_text += "🏆 *Results:*\n"
                 for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
-                    emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                    emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}\\."
                     # Show username with @ prefix, fallback to first_name if no username
-                    display_name = f"@{player.username}" if player.username else player.first_name
-                    results_text += f"{emoji} {display_name}: {player.guess}° ({points} pts, ±{accuracy}°)\n"
+                    raw_display_name = f"@{player.username}" if player.username else player.first_name
+                    display_name = escape_markdown(raw_display_name)
+                    results_text += f"{emoji} {display_name}: {player.guess}° \\({points} pts, ±{accuracy}°\\)\n"
                 
                 if len(results['scores']) > 5:
-                    results_text += f"\n... and {len(results['scores']) - 5} more players"
+                    results_text += f"\n\\.\\.\\. and {len(results['scores']) - 5} more players"
             else:
-                results_text += "😔 No valid submissions this round."
+                results_text += "😔 No valid submissions this round\\."
             
-            results_text += f"\n\n👥 **Participation:** {results['players_participated']}/{results['total_players']} players"
+            results_text += f"\n\n👥 *Participation:* {results['players_participated']}/{results['total_players']} players"
             
             # Send reveal image and results
             try:
@@ -945,7 +959,7 @@ class GangleBot:
                     chat_id=chat_id,
                     photo=InputFile(reveal_image, filename="reveal.png"),
                     caption=results_text,
-                    parse_mode=ParseMode.MARKDOWN
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
                 
                 # Disable the guess button to prevent further interactions
@@ -967,30 +981,30 @@ class GangleBot:
             return
         
         help_text = (
-            "🎯 **Gangle - Guess the Angle Game**\n\n"
-            "**How to Play:**\n"
-            "1. Use `/start_round` in a group to begin a new round\n"
-            "2. Click the 'Guess' button on the angle image\n"
-            "3. Use the inline number picker to select your angle (0-359°)\n"
-            "4. Confirm your guess - it stays private until round ends!\n"
-            "5. Wait for results and see the leaderboard!\n\n"
-            "**Commands:**\n"
-            "• `/start_round` - Start a new game round\n"
-            "• `/leaderboard` - View current rankings\n"
-            "• `/help` - Show this help message\n\n"
-            "**Admin Commands:**\n"
-            "• `/forfeit @username` - Remove player from round\n"
-            "• `/reset_leaderboard` - Reset all scores\n"
-            "• `/end_round` - End current round early (admin or starter only)\n\n"
-            "**Scoring:**\n"
-            "• Perfect guess (0° off): 100 points\n"
+            "🎯 *Gangle \\- Guess the Angle Game*\n\n"
+            "*How to Play:*\n"
+            "1\\. Use `/start_round` in a group to begin a new round\n"
+            "2\\. Click the 'Guess' button on the angle image\n"
+            "3\\. Use the inline number picker to select your angle \\(0\\-359°\\)\n"
+            "4\\. Confirm your guess \\- it stays private until round ends\\!\n"
+            "5\\. Wait for results and see the leaderboard\\!\n\n"
+            "*Commands:*\n"
+            "• `/start_round` \\- Start a new game round\n"
+            "• `/leaderboard` \\- View current rankings\n"
+            "• `/help` \\- Show this help message\n\n"
+            "*Admin Commands:*\n"
+            "• `/forfeit @username` \\- Remove player from round\n"
+            "• `/reset_leaderboard` \\- Reset all scores\n"
+            "• `/end_round` \\- End current round early \\(admin or starter only\\)\n\n"
+            "*Scoring:*\n"
+            "• Perfect guess \\(0° off\\): 100 points\n"
             "• Points decrease with accuracy\n"
             "• 180° off or more: 0 points\n\n"
-            "✨ **New!** No private messaging required - everything happens in the group!\n\n"
-            "🎮 **Have fun guessing angles!**"
+            "✨ *New\\!* No private messaging required \\- everything happens in the group\\!\n\n"
+            "🎮 *Have fun guessing angles\\!*"
         )
         
-        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN_V2)
     
     async def error_handler(self, update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
         """Handle errors."""
