@@ -42,6 +42,7 @@ class GangleBot:
         self.user_guess_states: Dict[str, Dict[str, Any]] = {}  # "chat_id:user_id" -> guess state
         self.status_update_jobs: Dict[int, Any] = {}  # chat_id -> job for status updates
         self.completion_monitor_jobs: Dict[int, Any] = {}  # chat_id -> job for completion monitoring
+        self.status_message_ids: Dict[int, int] = {}  # chat_id -> status message_id
         self._setup_handlers()
     
     def _setup_handlers(self):
@@ -239,6 +240,15 @@ class GangleBot:
         if user_id in round_obj.players and round_obj.players[user_id].guess is not None:
             await query.answer(
                 "✅ You've already submitted your guess!",
+                show_alert=True
+            )
+            return
+        
+        # Check if player already has an active guess session
+        state_key = f"{chat_id}:{user_id}"
+        if state_key in self.user_guess_states:
+            await query.answer(
+                "🎯 You already have an active guess session! Check your previous message or cancel it first.",
                 show_alert=True
             )
             return
@@ -525,35 +535,55 @@ class GangleBot:
             return
         
         status_text = (
-            f"🎯 **Round Status**\n\n"
-            f"👥 **Active Players:** {status['active_players']}\n"
-            f"✅ **Submitted:** {status['players_submitted']}\n"
-            f"⏳ **Pending:** {status['players_pending']}\n"
+            f"🎯 *Round Status*\n\n"
+            f"👥 *Active Players:* {status['active_players']}\n"
+            f"✅ *Submitted:* {status['players_submitted']}\n"
+            f"⏳ *Pending:* {status['players_pending']}\n"
         )
         
         if status['players_forfeited'] > 0:
-            status_text += f"❌ **Forfeited:** {status['players_forfeited']}\n"
+            status_text += f"❌ *Forfeited:* {status['players_forfeited']}\n"
         
         # Add timing information - show remaining time instead of elapsed time
         if status['can_complete_in'] > 0:
-            status_text += f"⏰ **Time until auto-complete:** {int(status['can_complete_in'])}s remaining\n"
+            status_text += f"⏰ *Time until auto\\-complete:* {int(status['can_complete_in'])}s remaining\n"
         elif status['all_submitted']:
-            status_text += "✨ **Round ready to complete!**\n"
+            status_text += "✨ *Round ready to complete\\!*\n"
         else:
             # Show time remaining until max wait time
             from config import config
             max_wait_remaining = max(0, config.max_wait_time - status['time_elapsed'])
             if max_wait_remaining > 0:
-                status_text += f"⏰ **Max wait time:** {int(max_wait_remaining)}s remaining\n"
+                status_text += f"⏰ *Max wait time:* {int(max_wait_remaining)}s remaining\n"
             else:
-                status_text += f"⏰ **Time elapsed:** {int(status['time_elapsed'])}s\n"
+                status_text += f"⏰ *Time elapsed:* {int(status['time_elapsed'])}s\n"
         
         try:
-            await context.bot.send_message(
+            # Try to update existing status message first
+            if chat_id in self.status_message_ids:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=self.status_message_ids[chat_id],
+                        text=status_text,
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                    return  # Successfully updated existing message
+                except Exception as edit_error:
+                    # Message might be deleted or not found, remove from tracking and send new one
+                    logger.warning(f"Failed to edit status message in group {chat_id}: {edit_error}")
+                    del self.status_message_ids[chat_id]
+            
+            # Send new status message if no existing one or edit failed
+            message = await context.bot.send_message(
                 chat_id=chat_id,
                 text=status_text,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN_V2
             )
+            
+            # Track the new status message
+            self.status_message_ids[chat_id] = message.message_id
+            
         except Exception as e:
             logger.error(f"Failed to update round status in group {chat_id}: {e}")
     
@@ -632,6 +662,10 @@ class GangleBot:
             if hasattr(self, 'status_update_jobs') and chat_id in self.status_update_jobs:
                 self.status_update_jobs[chat_id].schedule_removal()
                 del self.status_update_jobs[chat_id]
+            
+            # Clean up status message tracking
+            if chat_id in self.status_message_ids:
+                del self.status_message_ids[chat_id]
             
             logger.info(f"Round completed in group {chat_id} with {results['players_participated']} participants")
             print(f"DEBUG: Round completion finished for chat {chat_id}")
@@ -770,6 +804,11 @@ class GangleBot:
                 self.completion_monitor_jobs[chat_id].schedule_removal()
                 del self.completion_monitor_jobs[chat_id]
                 print(f"DEBUG: Stopped completion monitoring for chat {chat_id}")
+            
+            # Also clean up status message tracking when stopping monitoring
+            if chat_id in self.status_message_ids:
+                del self.status_message_ids[chat_id]
+                
         except Exception as e:
             print(f"DEBUG: Error stopping completion monitoring for chat {chat_id}: {e}")
             logger.error(f"Error stopping completion monitoring for chat {chat_id}: {e}")
@@ -968,6 +1007,10 @@ class GangleBot:
                 # Stop completion monitoring
                 self._stop_completion_monitoring(chat_id)
                 
+                # Clean up status message tracking
+                if chat_id in self.status_message_ids:
+                    del self.status_message_ids[chat_id]
+                
                 logger.info(f"Round ended early in group {chat_id} by user {user_id}")
             
             except Exception as e:
@@ -1032,6 +1075,9 @@ class GangleBot:
                     del self.status_update_jobs[chat_id]
                 except Exception as e:
                     logger.error(f"Error cleaning up status job for {chat_id}: {e}")
+            
+            # Clear status message tracking
+            self.status_message_ids.clear()
             
             logger.info("All scheduled jobs cleaned up")
         except Exception as e:
