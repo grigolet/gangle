@@ -3,6 +3,7 @@
 Gangle - Guess the Angle Game Bot
 Main bot application with Telegram integration.
 """
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 
@@ -53,6 +54,7 @@ class GangleBot:
         self.status_update_jobs: Dict[int, Any] = {}  # chat_id -> job for status updates
         self.completion_monitor_jobs: Dict[int, Any] = {}  # chat_id -> job for completion monitoring
         self.status_message_ids: Dict[int, int] = {}  # chat_id -> status message_id
+        self.monitoring_tasks: Dict[int, asyncio.Task] = {}  # chat_id -> background monitoring tasks
         self._setup_handlers()
     
     def _setup_handlers(self):
@@ -186,7 +188,7 @@ class GangleBot:
             )
             
             # Start completion monitoring (check every 10 seconds)
-            self._start_completion_monitoring(chat_id, context)
+            await self._start_completion_monitoring(chat_id)
             
             logger.info(f"Started new round in group {chat_id} with angle {round_obj.angle}°")
         
@@ -483,11 +485,8 @@ class GangleBot:
         # Send private confirmation (only visible to the user who clicked)
         await query.answer("✅ Guess submitted successfully! Waiting for other players...", show_alert=True)
         
-        # Update group status
-        await self._update_round_status(chat_id, context)
-        
-        # Check if round should end (but don't wait for return value since monitoring handles it)
-        await self._check_round_completion(chat_id, context)
+        # The asyncio monitoring loop will handle status updates and completion checking
+        # No need to manually trigger them here as they run every 10 seconds
     
     async def _handle_guess_cancellation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle guess cancellation."""
@@ -660,13 +659,13 @@ class GangleBot:
             
             print(f"DEBUG: Results sent, sending leaderboard for chat {chat_id}")
             # Send leaderboard after results
-            await self._send_leaderboard_to_chat(chat_id, context)
+            await self._send_leaderboard_to_chat(chat_id)
             
             # Disable the guess button to prevent further interactions
-            await self._disable_guess_button(chat_id, context)
+            await self._disable_guess_button(chat_id)
             
             # Stop completion monitoring
-            self._stop_completion_monitoring(chat_id)
+            await self._stop_completion_monitoring(chat_id)
             
             # Cancel any scheduled status updates
             if hasattr(self, 'status_update_jobs') and chat_id in self.status_update_jobs:
@@ -686,33 +685,49 @@ class GangleBot:
             print(f"DEBUG: Error sending results for chat {chat_id}: {e}")
             return False
     
-    async def _send_leaderboard_to_chat(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    async def _send_leaderboard_to_chat(self, chat_id: int):
         """Send leaderboard to a specific chat."""
-        leaderboard = game_manager.get_leaderboard(chat_id, limit=10)
-        
-        if not leaderboard:
-            await context.bot.send_message(
+        try:
+            print(f"DEBUG: _send_leaderboard_to_chat called for chat {chat_id}")
+            leaderboard = game_manager.get_leaderboard(chat_id, limit=10)
+            print(f"DEBUG: Leaderboard retrieved: {len(leaderboard) if leaderboard else 0} entries")
+            
+            if not leaderboard:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="📊 *Leaderboard*\n\nNo games played yet\\!",
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+                return
+
+            text = "🏆 *Leaderboard* \\(Top 10\\)\n\n"
+            print(f"DEBUG: Processing {len(leaderboard)} leaderboard entries")
+            
+            for i, player in enumerate(leaderboard, 1):
+                print(f"DEBUG: Processing player {i}: keys={list(player.keys())}")
+                emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}\\."
+                # Show username with @ prefix, fallback to first_name if no username
+                raw_display_name = f"@{player['username']}" if player.get('username') else player['first_name']
+                display_name = escape_markdown(raw_display_name)
+                rounds_value = player.get('rounds_played', '?')
+                print(f"DEBUG: Using rounds_played value: {rounds_value}")
+                text += f"{emoji} {display_name}: {player['total_points']} pts \\({rounds_value} rounds\\)\n"
+            
+            print(f"DEBUG: Sending leaderboard message")
+            await self.app.bot.send_message(
                 chat_id=chat_id,
-                text="📊 *Leaderboard*\n\nNo games played yet\\!",
+                text=text,
                 parse_mode=ParseMode.MARKDOWN_V2
             )
-            return
-
-        text = "🏆 *Leaderboard* \\(Top 10\\)\n\n"
-        for i, player in enumerate(leaderboard, 1):
-            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}\\."
-            # Show username with @ prefix, fallback to first_name if no username
-            raw_display_name = f"@{player['username']}" if player.get('username') else player['first_name']
-            display_name = escape_markdown(raw_display_name)
-            text += f"{emoji} {display_name}: {player['total_points']} pts \\({player['games_played']} games\\)\n"
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+            print(f"DEBUG: Leaderboard message sent successfully")
+            
+        except Exception as e:
+            print(f"DEBUG: Exception in _send_leaderboard_to_chat: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
     
-    async def _disable_guess_button(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    async def _disable_guess_button(self, chat_id: int):
         """Disable the guess button from the angle image when round completes."""
         round_obj = game_manager.get_active_round(chat_id)
         if not round_obj or not round_obj.angle_image_message_id:
@@ -720,7 +735,7 @@ class GangleBot:
         
         try:
             # Edit the message to remove the inline keyboard
-            await context.bot.edit_message_reply_markup(
+            await self.app.bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=round_obj.angle_image_message_id,
                 reply_markup=InlineKeyboardMarkup([[
@@ -769,47 +784,203 @@ class GangleBot:
             await self._periodic_status_update(chat_id, context)
     
     async def _periodic_status_update(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-        """Periodic status update callback."""
-        try:
-            print(f"DEBUG: Periodic status update for chat {chat_id}")
-            await self._update_round_status(chat_id, context)
-            await self._check_round_completion(chat_id, context)
-        except Exception as e:
-            print(f"DEBUG: Error in periodic status update for chat {chat_id}: {e}")
-            logger.error(f"Error in periodic status update for chat {chat_id}: {e}")
+        """Periodic status update callback - deprecated, now handled by asyncio."""
+        # This method is deprecated - status updates are now handled by the asyncio monitoring loop
+        print(f"DEBUG: Deprecated periodic status update called for chat {chat_id} - skipping")
+        pass
     
-    def _start_completion_monitoring(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-        """Start periodic monitoring for round completion."""
+    async def _start_completion_monitoring(self, chat_id: int):
+        """Start periodic monitoring for round completion using asyncio."""
         try:
-            # Debug logging
             print(f"DEBUG: _start_completion_monitoring called for chat {chat_id}")
-            print(f"DEBUG: context.job_queue is: {context.job_queue}")
-            print(f"DEBUG: self.app.job_queue is: {self.app.job_queue}")
             
-            # Use self.app.job_queue instead of context.job_queue
-            job_queue = self.app.job_queue
+            # Cancel any existing monitoring for this chat
+            await self._stop_completion_monitoring(chat_id)
             
-            # Cancel existing job if any
-            if chat_id in self.completion_monitor_jobs:
-                self.completion_monitor_jobs[chat_id].schedule_removal()
-                del self.completion_monitor_jobs[chat_id]
+            # Create new background task for monitoring
+            task = asyncio.create_task(self._monitor_completion_loop(chat_id))
+            self.monitoring_tasks[chat_id] = task
             
-            # Schedule new job to check completion every 10 seconds
-            if job_queue:
-                job = job_queue.run_repeating(
-                    callback=self._monitor_round_completion_callback,
-                    interval=10.0,  # Check every 10 seconds
-                    first=10.0,  # Start after 10 seconds
-                    name=f"completion_monitor_{chat_id}",
-                    data=chat_id  # Pass chat_id as data
-                )
-                self.completion_monitor_jobs[chat_id] = job
-                print(f"DEBUG: Started completion monitoring for chat {chat_id}")
-            else:
-                print(f"DEBUG: No job queue available, completion monitoring disabled for chat {chat_id}")
+            print(f"DEBUG: Started asyncio completion monitoring for chat {chat_id}")
+            logger.info(f"Started asyncio completion monitoring for chat {chat_id}")
         except Exception as e:
             print(f"DEBUG: Error starting completion monitoring for chat {chat_id}: {e}")
             logger.error(f"Error starting completion monitoring for chat {chat_id}: {e}")
+    
+    async def _monitor_completion_loop(self, chat_id: int):
+        """Background loop to monitor round completion and send status updates."""
+        try:
+            while True:
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                # Check if we should still be monitoring this chat
+                if chat_id not in self.monitoring_tasks:
+                    break
+                    
+                # Check for round completion
+                round_obj = game_manager.get_active_round(chat_id)
+                if round_obj:
+                    # Send status update first
+                    await self._send_status_update(chat_id)
+                    
+                    # Then check for completion
+                    await self._check_completion_status(chat_id)
+                else:
+                    # No active round, stop monitoring
+                    break
+                    
+        except asyncio.CancelledError:
+            print(f"DEBUG: Completion monitoring cancelled for chat {chat_id}")
+        except Exception as e:
+            print(f"DEBUG: Error in completion monitoring loop for chat {chat_id}: {e}")
+            logger.error(f"Error in completion monitoring loop for chat {chat_id}: {e}")
+        finally:
+            # Clean up task reference
+            if chat_id in self.monitoring_tasks:
+                del self.monitoring_tasks[chat_id]
+    
+    async def _send_status_update(self, chat_id: int):
+        """Send/update the round status message."""
+        try:
+            status = game_manager.get_round_status(chat_id)
+            if not status:
+                return
+            
+            status_text = (
+                f"🎯 *Round Status*\n\n"
+                f"👥 *Active Players:* {status['active_players']}\n"
+                f"✅ *Submitted:* {status['players_submitted']}\n"
+                f"⏳ *Pending:* {status['players_pending']}\n"
+            )
+            
+            if status['players_forfeited'] > 0:
+                status_text += f"❌ *Forfeited:* {status['players_forfeited']}\n"
+            
+            # Add timing information
+            if status['can_complete_in'] > 0:
+                status_text += f"⏰ *Time until auto\\-complete:* {int(status['can_complete_in'])}s remaining\n"
+            elif status['all_submitted']:
+                status_text += "✨ *Round ready to complete\\!*\n"
+            else:
+                from config import config
+                max_wait_remaining = max(0, config.max_wait_time - status['time_elapsed'])
+                if max_wait_remaining > 0:
+                    status_text += f"⏰ *Max wait time:* {int(max_wait_remaining)}s remaining\n"
+                else:
+                    status_text += f"⏰ *Time elapsed:* {int(status['time_elapsed'])}s\n"
+            
+            # Try to update existing status message first
+            if chat_id in self.status_message_ids:
+                try:
+                    await self.app.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=self.status_message_ids[chat_id],
+                        text=status_text,
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                    return  # Successfully updated existing message
+                except Exception as edit_error:
+                    # Message might be deleted or not found, remove from tracking and send new one
+                    logger.warning(f"Failed to edit status message in group {chat_id}: {edit_error}")
+                    del self.status_message_ids[chat_id]
+            
+            # Send new status message if no existing one or edit failed
+            message = await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=status_text,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            
+            # Track the new status message
+            self.status_message_ids[chat_id] = message.message_id
+            
+        except Exception as e:
+            logger.error(f"Failed to send status update in group {chat_id}: {e}")
+            print(f"DEBUG: Error sending status update for chat {chat_id}: {e}")
+    
+    async def _check_completion_status(self, chat_id: int):
+        """Check if round should be completed and handle completion if needed."""
+        try:
+            # Use existing round status logic
+            status = game_manager.get_round_status(chat_id)
+            if not status:
+                print(f"DEBUG: No status for chat {chat_id}")
+                return
+                
+            print(f"DEBUG: Round status for chat {chat_id}: all_submitted={status['all_submitted']}, can_complete={status['can_complete']}, time_elapsed={status['time_elapsed']}")
+            
+            # Check if round can be completed
+            if status['can_complete']:
+                print(f"DEBUG: Round ready to complete for chat {chat_id}, calling direct completion")
+                
+                # Complete the round directly
+                results = game_manager.complete_round(chat_id)
+                if not results:
+                    print(f"DEBUG: Failed to complete round for chat {chat_id}")
+                    return
+
+                print(f"DEBUG: Round completed successfully for chat {chat_id}, preparing results...")
+                
+                # Send results using the bot
+                await self._send_round_results(chat_id, results)
+                
+                # Stop monitoring since round is complete
+                await self._stop_completion_monitoring(chat_id)
+                
+        except Exception as e:
+            print(f"DEBUG: Error checking completion status for chat {chat_id}: {e}")
+            logger.error(f"Error checking completion status for chat {chat_id}: {e}")
+    
+    async def _send_round_results(self, chat_id: int, results: dict):
+        """Send the round results to the chat."""
+        try:
+            # Create reveal image with the correct angle
+            reveal_image = render_angle(results['angle'], show_label=True)
+            
+            # Prepare results text
+            results_text = "🎉 *Round Complete\\!*\n\n"
+            results_text += f"🎯 *Correct Angle:* {results['angle']}°\n\n"
+            
+            if results['scores']:
+                results_text += "🏆 *Results:*\n"
+                for i, (player, points, accuracy) in enumerate(results['scores'][:5], 1):
+                    emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}\\."
+                    # Show username with @ prefix, fallback to first_name if no username
+                    raw_display_name = f"@{player.username}" if player.username else player.first_name
+                    display_name = escape_markdown(raw_display_name)
+                    results_text += f"{emoji} {display_name}: {player.guess}° \\({points} pts, ±{accuracy}°\\)\n"
+                
+                if len(results['scores']) > 5:
+                    results_text += f"\n\\.\\.\\. and {len(results['scores']) - 5} more players"
+            else:
+                results_text += "😔 No valid submissions this round\\."
+            
+            results_text += f"\n\n👥 *Participation:* {results['players_participated']}/{results['total_players']} players"
+            
+            # Send reveal image and results
+            await self.app.bot.send_photo(
+                chat_id=chat_id,
+                photo=InputFile(reveal_image, filename="reveal.png"),
+                caption=results_text,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            
+            # Send leaderboard after results
+            await self._send_leaderboard_to_chat(chat_id)
+            
+            # Disable the guess button to prevent further interactions
+            await self._disable_guess_button(chat_id)
+            
+            # Clean up status message tracking
+            if chat_id in self.status_message_ids:
+                del self.status_message_ids[chat_id]
+            
+            logger.info(f"Round completed in group {chat_id} with {results['players_participated']} participants")
+            print(f"DEBUG: Round completion finished for chat {chat_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send round results in group {chat_id}: {e}")
+            print(f"DEBUG: Error sending results for chat {chat_id}: {e}")
     
     async def _monitor_round_completion_callback(self, context: ContextTypes.DEFAULT_TYPE):
         """Job queue callback for round completion monitoring."""
@@ -818,32 +989,28 @@ class GangleBot:
             await self._monitor_round_completion(chat_id, context)
     
     async def _monitor_round_completion(self, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-        """Monitor for round completion - called periodically."""
-        try:
-            print(f"DEBUG: Monitoring round completion for chat {chat_id}")
-            
-            # Update status and check for completion
-            await self._update_round_status(chat_id, context)
-            completed = await self._check_round_completion(chat_id, context)
-            
-            # If round completed, stop monitoring
-            if completed:
-                print(f"DEBUG: Round completed, stopping monitoring for chat {chat_id}")
-                self._stop_completion_monitoring(chat_id)
-            
-        except Exception as e:
-            print(f"DEBUG: Error in completion monitoring for chat {chat_id}: {e}")
-            logger.error(f"Error in completion monitoring for chat {chat_id}: {e}")
+        """Monitor for round completion - deprecated, now handled by asyncio."""
+        # This method is deprecated - monitoring is now handled by the asyncio loop
+        print(f"DEBUG: Deprecated round completion monitoring called for chat {chat_id} - skipping")
+        pass
     
-    def _stop_completion_monitoring(self, chat_id: int):
+    async def _stop_completion_monitoring(self, chat_id: int):
         """Stop the completion monitoring for a chat."""
         try:
-            if chat_id in self.completion_monitor_jobs:
+            # Cancel asyncio task
+            if chat_id in self.monitoring_tasks:
+                task = self.monitoring_tasks[chat_id]
+                task.cancel()
+                del self.monitoring_tasks[chat_id]
+                print(f"DEBUG: Stopped asyncio completion monitoring for chat {chat_id}")
+            
+            # Also cancel old job queue monitoring if it exists
+            if hasattr(self, 'completion_monitor_jobs') and chat_id in self.completion_monitor_jobs:
                 self.completion_monitor_jobs[chat_id].schedule_removal()
                 del self.completion_monitor_jobs[chat_id]
-                print(f"DEBUG: Stopped completion monitoring for chat {chat_id}")
+                print(f"DEBUG: Stopped job queue completion monitoring for chat {chat_id}")
             
-            # Also clean up status message tracking when stopping monitoring
+            # Clean up status message tracking when stopping monitoring
             if chat_id in self.status_message_ids:
                 del self.status_message_ids[chat_id]
                 
@@ -1040,10 +1207,10 @@ class GangleBot:
                 )
                 
                 # Disable the guess button to prevent further interactions
-                await self._disable_guess_button(chat_id, context)
+                await self._disable_guess_button(chat_id)
                 
                 # Stop completion monitoring
-                self._stop_completion_monitoring(chat_id)
+                await self._stop_completion_monitoring(chat_id)
                 
                 # Clean up status message tracking
                 if chat_id in self.status_message_ids:
@@ -1102,9 +1269,21 @@ class GangleBot:
     def _cleanup_all_jobs(self):
         """Clean up all scheduled jobs."""
         try:
-            # Clean up completion monitoring jobs
+            # Clean up asyncio monitoring tasks
+            for chat_id, task in list(self.monitoring_tasks.items()):
+                try:
+                    task.cancel()
+                    del self.monitoring_tasks[chat_id]
+                except Exception:
+                    pass
+            
+            # Clean up old completion monitoring jobs if they exist
             for chat_id in list(self.completion_monitor_jobs.keys()):
-                self._stop_completion_monitoring(chat_id)
+                try:
+                    self.completion_monitor_jobs[chat_id].schedule_removal()
+                    del self.completion_monitor_jobs[chat_id]
+                except Exception:
+                    pass
             
             # Clean up status update jobs
             for chat_id, job in list(self.status_update_jobs.items()):
